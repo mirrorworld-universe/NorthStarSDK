@@ -119,8 +119,15 @@ export class HSSNReader {
    */
   async isHealthy(): Promise<boolean> {
     try {
-      const response = await this.client.get('');
-      return response.status === 200;
+      const response = await this.client.get(
+        'hypergrid-ssn/hypergridssn/hypergrid_node',
+        {
+          params: {
+            'pagination.limit': '1',
+          },
+        }
+      );
+      return response.status === 200 && response.data?.hypergridNode !== undefined;
     } catch {
       return false;
     }

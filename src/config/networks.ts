@@ -32,10 +32,10 @@ export const NETWORKS: NetworkConfig = {
     rpc: 'https://api.testnet.sonic.game'
   },
   hssn: {
-    exapi: 'https://exapi-hssn.testnet'
+    exapi: 'https://exapi-hssn.testnet.sonic.game'
   },
   oracle: {
-    nisaba: 'https://testnet.nisaba-hssn'
+    nisaba: 'https://testnet.nisaba-hssn.sonic.game'
   }
 };
 
