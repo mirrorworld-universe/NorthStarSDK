@@ -9,6 +9,7 @@ pub struct Outbox {
     /// Total number of entries committed
     pub entry_count: u64,
     /// Merkle root over all entries (for verification)
+    // XXX: once anchor upgrades to borsh v1 use `solana_hash::Hash`
     pub merkle_root: [u8; 32],
     /// Bump seed for PDA derivation
     pub bump: u8,

@@ -5,7 +5,6 @@ use crate::{
     events::EntryCommitted,
     state::{FeeVault, Outbox, Session},
     types::{MsgKind, OutboxEntry, SonicMsg},
-    utils::compute_entry_hash,
 };
 
 #[derive(Accounts)]
@@ -153,7 +152,9 @@ impl<'info> SendMessage<'info> {
         };
 
         // Compute entry hash
-        let entry_id = compute_entry_hash(&entry)?;
+        // XXX: store hashes once anchor upgrades to borsh v1
+        // https://github.com/solana-foundation/anchor/pull/4012
+        let entry_id = entry.hash().to_bytes();
 
         // Update outbox
         self.outbox.entry_count = self

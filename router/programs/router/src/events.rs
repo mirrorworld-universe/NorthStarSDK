@@ -21,6 +21,7 @@ pub struct SessionOpened {
 #[event]
 pub struct EntryCommitted {
     /// Unique entry identifier (hash)
+    // XXX: once anchor upgrades to borsh v1 use `solana_hash::Hash`
     pub entry_id: [u8; 32],
     /// Associated session
     pub session: Pubkey,

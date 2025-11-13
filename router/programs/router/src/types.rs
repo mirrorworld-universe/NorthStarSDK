@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use solana_hash::Hash;
 
 /// Message types for Sonic execution
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
@@ -105,4 +106,17 @@ pub struct OutboxEntry {
     pub msg: SonicMsg,
     /// Signature over the entry
     pub sig: [u8; 64],
+}
+
+impl OutboxEntry {
+    pub fn hash(&self) -> Hash {
+        let mut hasher = solana_sha256_hasher::Hasher::default();
+        hasher.hashv(&[
+            self.owner.as_array(),
+            self.session.as_array(),
+            &self.fee_budget.to_le_bytes(),
+            &self.msg.nonce.to_le_bytes(),
+        ]);
+        hasher.result()
+    }
 }
