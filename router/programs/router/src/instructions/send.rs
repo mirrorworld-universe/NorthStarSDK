@@ -7,6 +7,7 @@ use crate::{
     types::{OutboxEntry, SonicMsg, SonicMsgInner},
 };
 
+// TODO: this can be removed and lazily initialized with `SendMessage` instead
 #[derive(Accounts)]
 pub struct InitOutbox<'info> {
     #[account(
