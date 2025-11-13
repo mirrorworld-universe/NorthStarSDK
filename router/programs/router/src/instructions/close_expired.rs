@@ -34,6 +34,8 @@ pub struct CloseExpired<'info> {
 
     #[account(mut)]
     pub owner: Signer<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 impl<'info> CloseExpired<'info> {
@@ -53,6 +55,18 @@ impl<'info> CloseExpired<'info> {
         );
 
         let refund_amount = self.fee_vault.balance;
+
+        // Transfer SOL from fee vault to owner
+        let transfer_ix =
+            system_instruction::transfer(&self.fee_vault.key(), &self.owner.key(), refund_amount);
+        anchor_lang::solana_program::program::invoke(
+            &transfer_ix,
+            &[
+                self.fee_vault.to_account_info(),
+                self.owner.to_account_info(),
+                self.system_program.to_account_info(),
+            ],
+        )?;
 
         // Emit event before closing
         emit!(SessionClosed {
