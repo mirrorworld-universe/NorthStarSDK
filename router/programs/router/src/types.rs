@@ -1,15 +1,6 @@
 use anchor_lang::prelude::*;
 use solana_hash::Hash;
 
-/// Message types for Sonic execution
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
-pub enum MsgKind {
-    /// Invoke mode: User specifies target_program, accounts, data
-    Invoke,
-    /// Embedded mode: User specifies opcode and params; Sonic resolves accounts
-    Embedded,
-}
-
 /// Embedded operation opcodes
 #[derive(
     Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, AnchorSerialize, AnchorDeserialize,
@@ -94,8 +85,6 @@ pub enum SonicMsgInner {
 pub struct SonicMsg {
     /// Target grid ID
     pub grid_id: u64,
-    /// Message type (Invoke or Embedded)
-    pub kind: MsgKind,
     /// Nonce for replay protection
     pub nonce: u128,
     /// Time-to-live in slots
@@ -116,7 +105,7 @@ pub struct OutboxEntry {
     /// The Sonic message
     pub msg: SonicMsg,
     /// Signature over the entry
-    // TODO: Make it propper signature
+    // TODO: Make it proper signature
     pub sig: [u8; 64],
 }
 
