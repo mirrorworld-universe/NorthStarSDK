@@ -73,13 +73,19 @@ impl From<SerializableAccountMeta> for AccountMeta {
 
 /// Invoke mode parameters
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct InvokeCall {
-    /// Target program to invoke on Sonic
-    pub target_program: Pubkey,
-    /// Accounts required for the call
-    pub accounts: Vec<SerializableAccountMeta>,
-    /// Instruction data
-    pub data: Vec<u8>,
+pub enum SonicMsgInner {
+    InvokeCall {
+        /// Target program to invoke on Sonic
+        target_program: Pubkey,
+        /// Accounts required for the call
+        accounts: Vec<SerializableAccountMeta>,
+        /// Instruction data
+        data: Vec<u8>,
+    },
+    EmbeddedOpcode {
+        opcode: EmbeddedOpcode,
+        params: EmbeddedParams,
+    },
 }
 
 /// Sonic message structure
@@ -89,16 +95,12 @@ pub struct SonicMsg {
     pub grid_id: u64,
     /// Message type (Invoke or Embedded)
     pub kind: MsgKind,
-    /// Invoke call parameters (if Invoke mode)
-    pub invoke: Option<InvokeCall>,
-    /// Embedded opcode (if Embedded mode)
-    pub opcode: Option<EmbeddedOpcode>,
-    /// Embedded parameters (if Embedded mode)
-    pub params: Option<EmbeddedParams>,
     /// Nonce for replay protection
     pub nonce: u128,
     /// Time-to-live in slots
     pub ttl_slots: u64,
+    /// Inner message
+    pub inner: SonicMsgInner,
 }
 
 /// Outbox entry structure

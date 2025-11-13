@@ -4,7 +4,7 @@ use crate::{
     errors::RouterError,
     events::EntryCommitted,
     state::{FeeVault, Outbox, Session},
-    types::{MsgKind, OutboxEntry, SonicMsg},
+    types::{OutboxEntry, SonicMsg, SonicMsgInner},
 };
 
 #[derive(Accounts)]
@@ -120,23 +120,19 @@ impl<'info> SendMessage<'info> {
         );
 
         // Validate allowed programs/opcodes based on message kind
-        match msg.kind {
-            MsgKind::Invoke => {
-                if let Some(ref invoke) = msg.invoke {
-                    require!(
-                        self.session.is_program_allowed(&invoke.target_program),
-                        RouterError::UnauthorizedProgram
-                    );
-                }
-            }
-            MsgKind::Embedded => {
-                if let Some(opcode) = msg.opcode {
-                    require!(
-                        self.session.is_opcode_allowed(opcode),
-                        RouterError::UnauthorizedOpcode
-                    );
-                }
-            }
+        match msg.inner {
+            SonicMsgInner::InvokeCall {
+                target_program,
+                accounts: _,
+                data: _,
+            } => require!(
+                self.session.is_program_allowed(&target_program),
+                RouterError::UnauthorizedProgram
+            ),
+            SonicMsgInner::EmbeddedOpcode { opcode, params: _ } => require!(
+                self.session.is_opcode_allowed(opcode),
+                RouterError::UnauthorizedOpcode
+            ),
         }
 
         // Create outbox entry
@@ -149,9 +145,7 @@ impl<'info> SendMessage<'info> {
         };
 
         // Compute entry hash
-        // XXX: store hashes once anchor upgrades to borsh v1
-        // https://github.com/solana-foundation/anchor/pull/4012
-        let entry_id = entry.hash().to_bytes();
+        let entry_id = entry.hash();
 
         // Update outbox
         self.outbox.entry_count = self
@@ -161,7 +155,9 @@ impl<'info> SendMessage<'info> {
             .ok_or(RouterError::ArithmeticOverflow)?;
 
         // Update Merkle root
-        self.outbox.merkle_root = entry_id;
+        // XXX: store hashes once anchor upgrades to borsh v1
+        // https://github.com/solana-foundation/anchor/pull/4012
+        self.outbox.merkle_root = entry_id.to_bytes();
 
         // Deduct fee from vault
         self.fee_vault.withdraw(fee_budget)?;
@@ -175,14 +171,14 @@ impl<'info> SendMessage<'info> {
 
         // Emit event
         emit!(EntryCommitted {
-            entry_id,
+            entry_id: entry_id.to_bytes(),
             session: self.session.key(),
             msg: msg.clone(),
             fee_budget,
             entry_index: self.outbox.entry_count - 1,
         });
 
-        msg!("Entry committed: {:?}", entry_id);
+        msg!("Entry committed: {}", entry_id);
         msg!("Nonce incremented to: {}", self.session.nonce);
 
         Ok(())
