@@ -147,13 +147,6 @@ impl<'info> SendMessage<'info> {
         // Compute entry hash
         let entry_id = entry.hash();
 
-        // Update outbox
-        self.outbox.entry_count = self
-            .outbox
-            .entry_count
-            .checked_add(1)
-            .ok_or(RouterError::ArithmeticOverflow)?;
-
         // Update Merkle root
         // XXX: store hashes once anchor upgrades to borsh v1
         // https://github.com/solana-foundation/anchor/pull/4012
@@ -175,8 +168,15 @@ impl<'info> SendMessage<'info> {
             session: self.session.key(),
             msg: msg.clone(),
             fee_budget,
-            entry_index: self.outbox.entry_count - 1,
+            entry_index: self.outbox.entry_count,
         });
+
+        // Update outbox
+        self.outbox.entry_count = self
+            .outbox
+            .entry_count
+            .checked_add(1)
+            .ok_or(RouterError::ArithmeticOverflow)?;
 
         msg!("Entry committed: {}", entry_id);
         msg!("Nonce incremented to: {}", self.session.nonce);
