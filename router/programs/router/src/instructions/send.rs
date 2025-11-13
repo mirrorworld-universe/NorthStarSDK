@@ -152,8 +152,6 @@ impl<'info> SendMessage<'info> {
             sig: [0u8; 64],
         };
 
-        
-
         // Compute entry hash
         let entry_id = compute_entry_hash(&entry)?;
 

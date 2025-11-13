@@ -1,6 +1,6 @@
+use anchor_lang::{prelude::*, solana_program::system_instruction::transfer};
+
 use crate::state::FeeVault;
-use anchor_lang::prelude::*;
-use anchor_lang::solana_program::system_instruction::transfer;
 
 #[derive(Accounts)]
 pub struct DepositFee<'info> {
@@ -23,11 +23,7 @@ pub struct DepositFee<'info> {
 impl<'info> DepositFee<'info> {
     pub fn deposit_fee(&mut self, amount: u64) -> Result<()> {
         // Transfer SOL from owner to fee vault
-        let transfer_ix = transfer(
-            &self.owner.key(),
-            &self.fee_vault.key(),
-            amount,
-        );
+        let transfer_ix = transfer(&self.owner.key(), &self.fee_vault.key(), amount);
 
         anchor_lang::solana_program::program::invoke(
             &transfer_ix,
