@@ -22,6 +22,10 @@ pub enum EmbeddedOpcode {
     // Future: Route, AddLiquidity, etc.
 }
 
+impl EmbeddedOpcode {
+    pub const SIZE: usize = 1;
+}
+
 /// Parameters for embedded swap operation
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct EmbeddedParams {
@@ -57,12 +61,12 @@ impl From<AccountMeta> for SerializableAccountMeta {
     }
 }
 
-impl Into<AccountMeta> for SerializableAccountMeta {
-    fn into(self) -> AccountMeta {
+impl From<SerializableAccountMeta> for AccountMeta {
+    fn from(val: SerializableAccountMeta) -> Self {
         AccountMeta {
-            pubkey: self.pubkey,
-            is_signer: self.is_signer,
-            is_writable: self.is_writable,
+            pubkey: val.pubkey,
+            is_signer: val.is_signer,
+            is_writable: val.is_writable,
         }
     }
 }

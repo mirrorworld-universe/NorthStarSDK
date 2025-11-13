@@ -48,7 +48,8 @@ pub mod router {
     /// Commits an intent to the OutboxPDA for relaying to Sonic
     pub fn send_message(
         ctx: Context<SendMessage>,
-        grid_id: u64,
+        // TODO: use grid_id
+        _grid_id: u64,
         msg: SonicMsg,
         fee_budget: u64,
     ) -> Result<()> {
@@ -56,7 +57,11 @@ pub mod router {
     }
 
     /// Close an expired session and refund unused fees
-    pub fn close_expired(ctx: Context<CloseExpired>, grid_id: u64) -> Result<()> {
+    pub fn close_expired(
+        ctx: Context<CloseExpired>,
+        // TODO: use grid_id
+        _grid_id: u64,
+    ) -> Result<()> {
         ctx.accounts.close_expired()
     }
 }

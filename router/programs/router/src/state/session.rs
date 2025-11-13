@@ -35,7 +35,7 @@ impl Session {
         32 + // owner
         8 + // grid_id
         4 + (32 * Self::MAX_ALLOWED_PROGRAMS) + // allowed_programs (Vec with max size)
-        4 + (1 * Self::MAX_ALLOWED_OPCODES) + // allowed_opcodes (Vec with max size)
+        4 + (EmbeddedOpcode::SIZE * Self::MAX_ALLOWED_OPCODES) + // allowed_opcodes (Vec with max size)
         8 + // ttl_slots
         8 + // fee_cap
         16 + // nonce (u128)
