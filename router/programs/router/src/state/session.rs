@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 
+use crate::types::EmbeddedOpcode;
+
 /// SessionPDA - Per-user session with access control and fee management
 /// Controls which programs/opcodes can be executed and manages fee budget
 #[account]
@@ -11,7 +13,8 @@ pub struct Session {
     /// Whitelisted programs that can be called
     pub allowed_programs: Vec<Pubkey>,
     /// Whitelisted embedded opcodes
-    pub allowed_opcodes: Vec<u8>,
+    // XXX: this can be bitmap
+    pub allowed_opcodes: Vec<EmbeddedOpcode>,
     /// Time-to-live in slots
     pub ttl_slots: u64,
     /// Maximum fee budget for this session
@@ -52,7 +55,7 @@ impl Session {
     }
 
     /// Check if opcode is allowed
-    pub fn is_opcode_allowed(&self, opcode: u8) -> bool {
+    pub fn is_opcode_allowed(&self, opcode: EmbeddedOpcode) -> bool {
         self.allowed_opcodes.is_empty() || self.allowed_opcodes.contains(&opcode)
     }
 }

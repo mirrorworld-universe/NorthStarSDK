@@ -11,7 +11,11 @@ pub enum MsgKind {
 }
 
 /// Embedded operation opcodes
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, AnchorSerialize, AnchorDeserialize,
+)]
+// TODO: add
+// #[borsh(use_discriminant = true)]
 pub enum EmbeddedOpcode {
     /// Swap operation
     Swap,

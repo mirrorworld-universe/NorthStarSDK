@@ -4,6 +4,7 @@ use crate::{
     errors::RouterError,
     events::SessionOpened,
     state::{FeeVault, Session},
+    types::EmbeddedOpcode,
 };
 
 #[derive(Accounts)]
@@ -46,7 +47,7 @@ impl<'info> OpenSession<'info> {
         &mut self,
         grid_id: u64,
         allowed_programs: Vec<Pubkey>,
-        allowed_opcodes: Vec<u8>,
+        allowed_opcodes: Vec<EmbeddedOpcode>,
         ttl_slots: u64,
         fee_cap: u64,
     ) -> Result<()> {

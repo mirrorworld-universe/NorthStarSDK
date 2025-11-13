@@ -130,12 +130,9 @@ impl<'info> SendMessage<'info> {
                 }
             }
             MsgKind::Embedded => {
-                if let Some(ref opcode) = msg.opcode {
-                    let opcode_byte = match opcode {
-                        crate::types::EmbeddedOpcode::Swap => 0,
-                    };
+                if let Some(opcode) = msg.opcode {
                     require!(
-                        self.session.is_opcode_allowed(opcode_byte),
+                        self.session.is_opcode_allowed(opcode),
                         RouterError::UnauthorizedOpcode
                     );
                 }

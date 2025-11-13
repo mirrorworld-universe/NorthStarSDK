@@ -21,7 +21,7 @@ pub mod router {
         ctx: Context<OpenSession>,
         grid_id: u64,
         allowed_programs: Vec<Pubkey>,
-        allowed_opcodes: Vec<u8>,
+        allowed_opcodes: Vec<EmbeddedOpcode>,
         ttl_slots: u64,
         fee_cap: u64,
     ) -> Result<()> {
