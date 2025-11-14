@@ -7,47 +7,13 @@ use crate::{
     types::{OutboxEntry, SonicMsg, SonicMsgInner},
 };
 
-// TODO: this can be removed and lazily initialized with `SendMessage` instead
-#[derive(Accounts)]
-pub struct InitOutbox<'info> {
-    #[account(
-        init,
-        payer = owner,
-        space = Outbox::LEN,
-        seeds = [
-            Outbox::SEED_PREFIX,
-            owner.key().as_ref()
-        ],
-        bump
-    )]
-    pub outbox: Account<'info, Outbox>,
-
-    #[account(mut)]
-    pub owner: Signer<'info>,
-
-    pub system_program: Program<'info, System>,
-}
-
-impl<'info> InitOutbox<'info> {
-    pub fn init_outbox(&mut self) -> Result<()> {
-        self.outbox.set_inner(Outbox {
-            authority: self.owner.key(),
-            entry_count: 0,
-            merkle_root: [0u8; 32],
-            bump: self.outbox.bump,
-        });
-
-        msg!("Outbox initialized for: {}", self.owner.key());
-
-        Ok(())
-    }
-}
-
 #[derive(Accounts)]
 #[instruction(grid_id: u64, msg: SonicMsg)]
 pub struct SendMessage<'info> {
     #[account(
-        mut,
+        init_if_needed,
+        payer = owner,
+        space = Outbox::LEN,
         seeds = [
             Outbox::SEED_PREFIX,
             owner.key().as_ref()
@@ -85,6 +51,20 @@ pub struct SendMessage<'info> {
 
 impl<'info> SendMessage<'info> {
     pub fn send_message(&mut self, msg: SonicMsg, fee_budget: u64) -> Result<()> {
+        if self.outbox.authority == Pubkey::default() {
+            self.outbox.set_inner(Outbox {
+                authority: self.owner.key(),
+                entry_count: 0,
+                merkle_root: [0u8; 32],
+                bump: self.outbox.bump,
+            });
+        }
+
+        require!(
+            self.outbox.authority == self.owner.key(),
+            RouterError::UnauthorizedProgram
+        );
+
         let clock = Clock::get()?;
 
         // Validate grid_id matches session
@@ -148,11 +128,12 @@ impl<'info> SendMessage<'info> {
 
         // Compute entry hash
         let entry_id = entry.hash();
-
-        // Update Merkle root
-        // XXX: store hashes once anchor upgrades to borsh v1
-        // https://github.com/solana-foundation/anchor/pull/4012
-        self.outbox.merkle_root = entry_id.to_bytes();
+        
+        // Update Merkle root using incremental hash chain
+        // This implements: hash(prev_merkle_root || entry_hash)
+        // This ensures the entire history of entries is cryptographically
+        // committed in the root, allowing verification of all previous entries.
+        self.outbox.update_merkle_root(entry_id);
 
         // Deduct fee from vault
         self.fee_vault.withdraw(fee_budget)?;
