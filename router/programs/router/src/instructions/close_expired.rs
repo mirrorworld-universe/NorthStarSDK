@@ -1,4 +1,7 @@
-use anchor_lang::prelude::*;
+use anchor_lang::{
+    prelude::*,
+    solana_program::{program::invoke_signed, system_instruction},
+};
 
 use crate::{
     errors::RouterError,
@@ -59,16 +62,21 @@ impl<'info> CloseExpired<'info> {
         // Transfer SOL from fee vault to owner
         let transfer_ix =
             system_instruction::transfer(&self.fee_vault.key(), &self.owner.key(), refund_amount);
-        anchor_lang::solana_program::program::invoke(
+
+        invoke_signed(
             &transfer_ix,
             &[
                 self.fee_vault.to_account_info(),
                 self.owner.to_account_info(),
                 self.system_program.to_account_info(),
             ],
+            &[&[
+                FeeVault::SEED_PREFIX,
+                self.owner.key().as_ref(),
+                &[self.fee_vault.bump],
+            ]],
         )?;
 
-        // Emit event before closing
         emit!(SessionClosed {
             session: self.session.key(),
             owner: self.session.owner,
