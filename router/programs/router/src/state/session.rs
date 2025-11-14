@@ -18,13 +18,13 @@ pub struct Session {
     // XXX: this can be bitmap
     pub allowed_opcodes: Vec<EmbeddedOpcode>,
     /// Time-to-live in slots
-    pub ttl_slots: NonZero<u64>,
+    pub ttl_slots: NonZero<clock::Slot>,
     /// Maximum fee budget for this session
     pub fee_cap: NonZero<u64>,
     /// Current nonce (for replay protection)
     pub nonce: u128,
-    /// Creation timestamp
-    pub created_at: i64,
+    /// Creation slot
+    pub created_at: clock::Slot,
     /// Bump seed for PDA derivation
     pub bump: u8,
 }
@@ -48,8 +48,7 @@ impl Session {
 
     /// Check if session is expired
     pub fn is_expired(&self, current_slot: u64) -> bool {
-        let creation_slot = (self.created_at / 400) as u64; // ~400ms per slot
-        current_slot > creation_slot.saturating_add(self.ttl_slots.get())
+        current_slot > self.created_at.saturating_add(self.ttl_slots.get())
     }
     /// Check if program is allowed
     pub fn is_program_allowed(&self, program: &Pubkey) -> bool {

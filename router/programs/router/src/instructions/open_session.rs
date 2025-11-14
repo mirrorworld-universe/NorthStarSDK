@@ -72,7 +72,7 @@ impl<'info> OpenSession<'info> {
             ttl_slots,
             fee_cap,
             nonce: 0,
-            created_at: Clock::get()?.unix_timestamp,
+            created_at: Clock::get()?.slot,
             bump: self.session.bump,
         });
 
