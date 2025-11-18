@@ -36,11 +36,6 @@ pub mod router {
         )
     }
 
-    /// Initialize an outbox for the user
-    pub fn init_outbox(ctx: Context<InitOutbox>) -> Result<()> {
-        ctx.accounts.init_outbox()
-    }
-
     /// Deposit fees into the fee vault
     pub fn deposit_fee(ctx: Context<DepositFee>, amount: u64) -> Result<()> {
         ctx.accounts.deposit_fee(amount)

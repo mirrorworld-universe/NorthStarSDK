@@ -64,23 +64,7 @@ describe("SonicRouter Program", () => {
       console.log("  Nonce:", session.nonce.toNumber());
     });
 
-    it("Step 2: Initialize outbox", async () => {
-      const tx = await program.methods
-        .initOutbox()
-        .rpc();
-
-      console.log("✓ Outbox initialized:", tx);
-
-      // Verify outbox
-      const outbox = await program.account.outbox.fetch(outboxPda);
-      expect(outbox.authority.toBase58()).to.equal(owner.toBase58());
-      expect(outbox.entryCount.toNumber()).to.equal(0);
-
-      console.log("  Outbox PDA:", outboxPda.toBase58());
-      console.log("  Entry count:", outbox.entryCount.toNumber());
-    });
-
-    it("Step 3: Fund fee vault", async () => {
+    it("Step 2: Fund fee vault", async () => {
       const depositAmount = new anchor.BN(500_000);
 
       const tx = await program.methods
@@ -101,7 +85,14 @@ describe("SonicRouter Program", () => {
       console.log("  Actual SOL balance:", solBalance, "lamports");
     });
 
-    it("Step 4: Send message to Sonic", async () => {
+    it("Step 3: Send message to Sonic", async () => {
+      try {
+        await program.account.outbox.fetch(outboxPda);
+        expect.fail("Outbox should not exist before first sendMessage");
+      } catch (error: any) {
+        expect(error).to.exist;
+      }
+
       const msg = {
         gridId,
         kind: { invoke: {} },
@@ -124,8 +115,8 @@ describe("SonicRouter Program", () => {
 
       console.log("✓ Message sent:", tx);
 
-      // Verify outbox was updated
       const outbox = await program.account.outbox.fetch(outboxPda);
+      expect(outbox.authority.toBase58()).to.equal(owner.toBase58());
       expect(outbox.entryCount.toNumber()).to.equal(1);
 
       // Verify nonce was incremented
