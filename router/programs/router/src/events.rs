@@ -2,7 +2,7 @@ use std::num::NonZero;
 
 use anchor_lang::prelude::*;
 
-use crate::types::SonicMsg;
+use crate::types::SonicMsgInner;
 
 /// Event emitted when a new session is opened
 #[event]
@@ -28,7 +28,7 @@ pub struct EntryCommitted {
     /// Associated session
     pub session: Pubkey,
     /// The Sonic message
-    pub msg: SonicMsg,
+    pub msg: SonicMsgInner,
     /// Fee budget allocated for this entry
     pub fee_budget: u64,
     /// Entry index in outbox
