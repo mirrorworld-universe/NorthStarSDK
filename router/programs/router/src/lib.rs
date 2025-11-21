@@ -46,11 +46,11 @@ pub mod router {
     pub fn send_message(
         ctx: Context<SendMessage>,
         // TODO: use grid_id
-        _grid_id: u64,
+        grid_id: u64,
         msg: SonicMsg,
         fee_budget: u64,
     ) -> Result<()> {
-        ctx.accounts.send_message(msg, fee_budget)
+        ctx.accounts.send_message(grid_id, msg, fee_budget)
     }
 
     /// Close an expired session and refund unused fees

@@ -1,10 +1,11 @@
 use anchor_lang::prelude::*;
+use solana_hash::Hash;
 
 use crate::{
     errors::RouterError,
     events::EntryCommitted,
     state::{FeeVault, Outbox, Session},
-    types::{OutboxEntry, SonicMsg, SonicMsgInner},
+    types::{SonicMsg, SonicMsgInner},
 };
 
 #[derive(Accounts)]
@@ -50,14 +51,11 @@ pub struct SendMessage<'info> {
 }
 
 impl<'info> SendMessage<'info> {
-    pub fn send_message(&mut self, msg: SonicMsg, fee_budget: u64) -> Result<()> {
+    pub fn send_message(&mut self, grid_id: u64, msg: SonicMsg, fee_budget: u64) -> Result<()> {
         let clock = Clock::get()?;
 
         // Validate grid_id matches session
-        require!(
-            msg.grid_id == self.session.grid_id,
-            RouterError::InvalidGridId
-        );
+        require!(grid_id == self.session.grid_id, RouterError::InvalidGridId);
 
         // Validate session ownership
         require!(
@@ -102,29 +100,19 @@ impl<'info> SendMessage<'info> {
             ),
         }
 
-        // Create outbox entry
-        let entry = OutboxEntry {
-            owner: self.session.owner,
-            session: self.session.key(),
-            fee_budget,
-            msg: msg.clone(),
-            // TODO: add signing
-            sig: [0u8; 64],
-        };
-
         // Compute entry hash
-        let entry_id = entry.hash();
+        let entry_id = Hash::default().to_bytes(); // TODO: add merkle root
 
         // Lazy initialize outbox if needed
         if self.outbox.authority == Pubkey::default() {
             self.outbox.set_inner(Outbox {
                 authority: self.owner.key(),
                 entry_count: 0,
-                merkle_root: entry_id.to_bytes(),
+                merkle_root: entry_id,
                 bump: self.outbox.bump,
             });
         } else {
-            self.outbox.merkle_root = entry_id.to_bytes();
+            self.outbox.merkle_root = entry_id;
         }
 
         // Deduct fee from vault
@@ -139,9 +127,9 @@ impl<'info> SendMessage<'info> {
 
         // Emit event
         emit!(EntryCommitted {
-            entry_id: entry_id.to_bytes(),
+            entry_id,
             session: self.session.key(),
-            msg: msg.clone(),
+            msg: msg.inner.clone(),
             fee_budget,
             entry_index: self.outbox.entry_count,
         });
@@ -153,7 +141,7 @@ impl<'info> SendMessage<'info> {
             .checked_add(1)
             .ok_or(RouterError::ArithmeticOverflow)?;
 
-        msg!("Entry committed: {}", entry_id);
+        msg!("Entry committed: {:?}", Hash::default().to_bytes()); // TODO: add merkle root
         msg!("Nonce incremented to: {}", self.session.nonce);
 
         Ok(())
