@@ -101,18 +101,18 @@ impl<'info> SendMessage<'info> {
         }
 
         // Compute entry hash
-        let entry_id = Hash::default().to_bytes(); // TODO: add merkle root
+        let entry_id = Hash::default(); // TODO: add merkle root
 
         // Lazy initialize outbox if needed
         if self.outbox.authority == Pubkey::default() {
             self.outbox.set_inner(Outbox {
                 authority: self.owner.key(),
                 entry_count: 0,
-                merkle_root: entry_id,
+                merkle_root: entry_id.to_bytes(),
                 bump: self.outbox.bump,
             });
         } else {
-            self.outbox.merkle_root = entry_id;
+            self.outbox.merkle_root = entry_id.to_bytes();
         }
 
         // Deduct fee from vault
@@ -127,7 +127,7 @@ impl<'info> SendMessage<'info> {
 
         // Emit event
         emit!(EntryCommitted {
-            entry_id,
+            entry_id: entry_id.to_bytes(),
             session: self.session.key(),
             msg: msg.inner.clone(),
             fee_budget,
@@ -141,7 +141,7 @@ impl<'info> SendMessage<'info> {
             .checked_add(1)
             .ok_or(RouterError::ArithmeticOverflow)?;
 
-        msg!("Entry committed: {:?}", Hash::default().to_bytes()); // TODO: add merkle root
+        msg!("Entry committed: {:?}", entry_id); 
         msg!("Nonce incremented to: {}", self.session.nonce);
 
         Ok(())
