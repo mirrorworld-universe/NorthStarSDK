@@ -1,5 +1,4 @@
 use anchor_lang::prelude::*;
-use solana_hash::Hash;
 
 /// Embedded operation opcodes
 #[derive(
@@ -91,33 +90,4 @@ pub struct SonicMsg {
     pub ttl_slots: u64,
     /// Inner message
     pub inner: SonicMsgInner,
-}
-
-/// Outbox entry structure
-#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
-pub struct OutboxEntry {
-    /// Entry owner
-    pub owner: Pubkey,
-    /// Associated session
-    pub session: Pubkey,
-    /// Fee budget for this entry
-    pub fee_budget: u64,
-    /// The Sonic message
-    pub msg: SonicMsg,
-    /// Signature over the entry
-    // TODO: Make it proper signature
-    pub sig: [u8; 64],
-}
-
-impl OutboxEntry {
-    pub fn hash(&self) -> Hash {
-        let mut hasher = solana_sha256_hasher::Hasher::default();
-        hasher.hashv(&[
-            self.owner.as_array(),
-            self.session.as_array(),
-            &self.fee_budget.to_le_bytes(),
-            &self.msg.nonce.to_le_bytes(),
-        ]);
-        hasher.result()
-    }
 }
