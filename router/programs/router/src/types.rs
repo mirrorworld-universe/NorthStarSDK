@@ -73,6 +73,9 @@ pub enum SonicMsgInner {
         /// Instruction data
         data: Vec<u8>,
     },
+    MirrorL1Accounts {
+        accounts: Vec<Pubkey>,
+    },
     EmbeddedOpcode {
         opcode: EmbeddedOpcode,
         params: EmbeddedParams,
