@@ -98,6 +98,7 @@ impl<'info> SendMessage<'info> {
                 self.session.is_opcode_allowed(opcode),
                 RouterError::UnauthorizedOpcode
             ),
+            SonicMsgInner::MirrorL1Accounts { accounts: _ } => (),
         }
 
         // Compute entry hash
@@ -141,7 +142,7 @@ impl<'info> SendMessage<'info> {
             .checked_add(1)
             .ok_or(RouterError::ArithmeticOverflow)?;
 
-        msg!("Entry committed: {:?}", entry_id); 
+        msg!("Entry committed: {entry_id}");
         msg!("Nonce incremented to: {}", self.session.nonce);
 
         Ok(())
