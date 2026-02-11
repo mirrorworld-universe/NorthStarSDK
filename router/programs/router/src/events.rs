@@ -1,5 +1,3 @@
-use std::num::NonZero;
-
 use anchor_lang::prelude::*;
 
 use crate::types::SonicMsgInner;
@@ -14,9 +12,9 @@ pub struct SessionOpened {
     /// Target grid ID
     pub grid_id: u64,
     /// Time-to-live in slots
-    pub ttl_slots: NonZero<u64>,
+    pub ttl_slots: u64,
     /// Fee cap for the session
-    pub fee_cap: NonZero<u64>,
+    pub fee_cap: u64,
 }
 
 /// Event emitted when an entry is committed to the outbox

@@ -1,0 +1,40 @@
+
+[package]
+name = "router-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 引用 router 程序
+router = { path = "../programs/router", features = ["cpi"] }
+
+# Anchor 依赖 (与 router 保持一致)
+anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
+anchor-spl = { version = "0.31.1" }
+
+# Solana 核心依赖 (与 anchor 0.31.1 兼容)
+solana-sdk = "2.1"
+solana-program = "2.1"
+
+# Solana 测试依赖
+solana-program-test = "2.1"
+solana-banks-client = "2.1"
+solana-banks-server = "2.1"
+
+# 异步运行时 (用于 #[tokio::test])
+tokio = { version = "1", features = ["full"] }
+
+# 其他有用的测试工具
+[dev-dependencies]
+# 序列化支持
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# 断言辅助
+anyhow = "1.0"
+
+# Windows 平台: 使用系统 OpenSSL (需配合 mingw64 或 vcpkg)
+# 使用 mingw64 时: 设置 PKG_CONFIG_PATH 并配合 --target x86_64-pc-windows-gnu 构建
+# 使用 vcpkg 时: 设置 OPENSSL_NO_VENDOR=1 和 OPENSSL_DIR
+# [target.'cfg(windows)'.dependencies]
+# openssl = { version = "0.10" }

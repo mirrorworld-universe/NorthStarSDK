@@ -1,7 +1,5 @@
 [workspace]
-members = [
-    "programs/*"
-]
+members = ["programs/*", "router-tests"]
 resolver = "2"
 
 # Separate very slow profile with lots of opinionated optimizations

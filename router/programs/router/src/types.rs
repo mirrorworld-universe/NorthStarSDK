@@ -1,6 +1,8 @@
 use anchor_lang::prelude::*;
 
 /// Embedded operation opcodes
+/// 使用 repr(u8) 确保非零大小，避免 Borsh 的 "Vectors of zero-sized types are not allowed" 错误
+#[repr(u8)]
 #[derive(
     Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, AnchorSerialize, AnchorDeserialize,
 )]
@@ -8,7 +10,7 @@ use anchor_lang::prelude::*;
 // #[borsh(use_discriminant = true)]
 pub enum EmbeddedOpcode {
     /// Swap operation
-    Swap,
+    Swap = 0,
     // Future: Route, AddLiquidity, etc.
 }
 

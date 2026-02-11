@@ -1,11 +1,13 @@
-use std::num::NonZero;
-
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::clock;
 
 use crate::types::EmbeddedOpcode;
 
 /// SessionPDA - Per-user session with access control and fee management
 /// Controls which programs/opcodes can be executed and manages fee budget
+///
+/// 注意: ttl_slots 和 fee_cap 使用 u64 而非 NonZero，因为 init 时账户为零，
+/// 反序列化 NonZero::new(0) 会失败导致 AccountDidNotDeserialize。指令层已校验非零。
 #[account]
 pub struct Session {
     /// Owner of this session
@@ -17,10 +19,10 @@ pub struct Session {
     /// Whitelisted embedded opcodes
     // XXX: this can be bitmap
     pub allowed_opcodes: Vec<EmbeddedOpcode>,
-    /// Time-to-live in slots
-    pub ttl_slots: NonZero<clock::Slot>,
-    /// Maximum fee budget for this session
-    pub fee_cap: NonZero<u64>,
+    /// Time-to-live in slots (must be > 0, validated in instruction)
+    pub ttl_slots: clock::Slot,
+    /// Maximum fee budget for this session (must be > 0, validated in instruction)
+    pub fee_cap: u64,
     /// Current nonce (for replay protection)
     pub nonce: u128,
     /// Creation slot
@@ -48,7 +50,7 @@ impl Session {
 
     /// Check if session is expired
     pub fn is_expired(&self, current_slot: u64) -> bool {
-        current_slot > self.created_at.saturating_add(self.ttl_slots.get())
+        current_slot > self.created_at.saturating_add(self.ttl_slots)
     }
     /// Check if program is allowed
     pub fn is_program_allowed(&self, program: &Pubkey) -> bool {

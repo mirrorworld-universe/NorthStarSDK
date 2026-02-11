@@ -63,14 +63,14 @@ impl<'info> OpenSession<'info> {
             RouterError::TooManyAllowedOpcodes
         );
 
-        // Initialize session
+        // Initialize session (store u64, instruction already validated NonZero)
         self.session.set_inner(Session {
             owner: self.owner.key(),
             grid_id,
             allowed_programs,
             allowed_opcodes,
-            ttl_slots,
-            fee_cap,
+            ttl_slots: ttl_slots.get(),
+            fee_cap: fee_cap.get(),
             nonce: 0,
             created_at: Clock::get()?.slot,
             bump: self.session.bump,
