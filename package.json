@@ -1,21 +1,17 @@
 {
   "name": "north-star-sdk",
   "version": "0.1.0",
-  "description": "SDK for reading from Sonic Grid and constructing transactions on Solana",
+  "description": "SDK for interacting with Ephemeral Rollups and constructing Portal transactions on Solana",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest",
-    "demo": "ts-node examples/read-demo.ts",
-    "demo:full": "ts-node examples/full-integration-demo.ts",
-    "demo:e2e": "ts-node examples/read-from-sonic-demo.ts",
-    "demo:sonic-counter": "ts-node examples/sonic-counter/counter-demo.ts"
+    "test": "jest"
   },
   "keywords": [
     "solana",
-    "sonic",
-    "hypergrid",
+    "ephemeral-rollup",
+    "portal",
     "blockchain"
   ],
   "author": "",

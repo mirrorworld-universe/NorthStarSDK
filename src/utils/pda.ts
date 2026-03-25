@@ -1,10 +1,10 @@
 /**
- * PDA Derivation Utilities for SonicRouter Program
+ * PDA Derivation Utilities for Portal Program
  * Uses Anza Kit's getProgramDerivedAddress
  */
 
 import { Address, getProgramDerivedAddress } from '@solana/addresses';
-import { SONIC_ROUTER_PROGRAM_ID } from '../programs/router';
+import { PORTAL_PROGRAM_ID } from '../programs/portal';
 
 /**
  * Convert number to little-endian bytes for PDA seeds
@@ -20,14 +20,15 @@ function numberToLE(num: number, bytes: number): Uint8Array {
 
 /**
  * Derive SessionPDA address using Kit's PDA derivation
- * Seeds: ["session", owner, grid_id]
+ * Seeds: ["session", owner, grid_id (8 bytes LE)]
  */
 export async function deriveSessionPDA(
   owner: Address,
-  gridId: number
+  gridId: number,
+  portalProgramId: Address = PORTAL_PROGRAM_ID
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
-    programAddress: SONIC_ROUTER_PROGRAM_ID,
+    programAddress: portalProgramId,
     seeds: [
       'session',
       owner,
@@ -41,9 +42,12 @@ export async function deriveSessionPDA(
  * Derive FeeVaultPDA address using Kit's PDA derivation
  * Seeds: ["fee_vault", owner]
  */
-export async function deriveFeeVaultPDA(owner: Address): Promise<Address> {
+export async function deriveFeeVaultPDA(
+  owner: Address,
+  portalProgramId: Address = PORTAL_PROGRAM_ID
+): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
-    programAddress: SONIC_ROUTER_PROGRAM_ID,
+    programAddress: portalProgramId,
     seeds: [
       'fee_vault',
       owner
@@ -53,15 +57,38 @@ export async function deriveFeeVaultPDA(owner: Address): Promise<Address> {
 }
 
 /**
- * Derive OutboxPDA address using Kit's PDA derivation
- * Seeds: ["outbox", authority]
+ * Derive DelegationRecordPDA address using Kit's PDA derivation
+ * Seeds: ["delegation", delegated_account]
  */
-export async function deriveOutboxPDA(authority: Address): Promise<Address> {
+export async function deriveDelegationRecordPDA(
+  delegatedAccount: Address,
+  portalProgramId: Address = PORTAL_PROGRAM_ID
+): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
-    programAddress: SONIC_ROUTER_PROGRAM_ID,
+    programAddress: portalProgramId,
     seeds: [
-      'outbox',
-      authority
+      'delegation',
+      delegatedAccount
+    ],
+  });
+  return pda;
+}
+
+/**
+ * Derive DepositReceiptPDA address using Kit's PDA derivation
+ * Seeds: ["deposit_receipt", session, recipient]
+ */
+export async function deriveDepositReceiptPDA(
+  session: Address,
+  recipient: Address,
+  portalProgramId: Address = PORTAL_PROGRAM_ID
+): Promise<Address> {
+  const [pda] = await getProgramDerivedAddress({
+    programAddress: portalProgramId,
+    seeds: [
+      'deposit_receipt',
+      session,
+      recipient
     ],
   });
   return pda;

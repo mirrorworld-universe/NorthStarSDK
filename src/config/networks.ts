@@ -1,6 +1,6 @@
 /**
  * Network configuration for North Star SDK
- * Contains RPC endpoints for Solana, Sonic Grid, and HSSN
+ * Contains RPC endpoints for Solana and Ephemeral Rollup
  */
 
 export interface NetworkConfig {
@@ -9,17 +9,10 @@ export interface NetworkConfig {
     testnet: string;
     devnet: string;
   };
-  sonic: {
+  ephemeralRollup: {
     devnet: string;
     testnet: string;
     mainnet: string;
-    grid: string;
-  };
-  hssn: {
-    exapi: string;
-  };
-  oracle: {
-    nisaba: string;
   };
 }
 
@@ -29,21 +22,11 @@ export const NETWORKS: NetworkConfig = {
     testnet: 'https://api.testnet.solana.com',
     devnet: 'https://api.devnet.solana.com'
   },
-  sonic: {
-    devnet: 'https://sonic.helius-rpc.com/',
-    testnet: 'https://api.testnet.sonic.game',
-    mainnet: 'https://api.mainnet-alpha.sonic.game',
-    grid: 'https://api.grid.sonic.game'
-  },
-  hssn: {
-    exapi: 'https://exapi-hssn.testnet.sonic.game'
-  },
-  oracle: {
-    nisaba: 'https://testnet.nisaba-hssn.sonic.game'
+  ephemeralRollup: {
+    devnet: 'http://localhost:8910',
+    testnet: 'http://localhost:8910',
+    mainnet: 'http://localhost:8910'
   }
 };
 
 export type SolanaNetwork = 'mainnet' | 'testnet' | 'devnet';
-
-
-

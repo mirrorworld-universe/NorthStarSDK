@@ -1,6 +1,6 @@
 /**
  * Integration Tests
- * End-to-end tests for North Star SDK
+ * End-to-end tests for North Star SDK with Portal program
  */
 
 import { address } from '@solana/addresses';
@@ -12,7 +12,6 @@ describe('North Star SDK Integration Tests', () => {
   beforeAll(() => {
     sdk = new NorthStarSDK({
       solanaNetwork: 'testnet',
-      sonicGridId: 1,
     });
   });
 
@@ -25,11 +24,9 @@ describe('North Star SDK Integration Tests', () => {
     const health = await sdk.checkHealth();
 
     expect(health).toHaveProperty('solana');
-    expect(health).toHaveProperty('sonic');
-    expect(health).toHaveProperty('hssn');
+    expect(health).toHaveProperty('ephemeralRollup');
     expect(typeof health.solana).toBe('boolean');
-    expect(typeof health.sonic).toBe('boolean');
-    expect(typeof health.hssn).toBe('boolean');
+    expect(typeof health.ephemeralRollup).toBe('boolean');
   }, 30000);
 
   test('should resolve account info', async () => {
@@ -39,25 +36,28 @@ describe('North Star SDK Integration Tests', () => {
 
     expect(accountInfo).toBeDefined();
     expect(accountInfo.address).toBe(systemProgram);
-    expect(['sonic', 'hssn', 'solana']).toContain(accountInfo.source);
+    expect(['ephemeral-rollup', 'solana']).toContain(accountInfo.source);
   }, 30000);
 
-  test('should build read transaction', async () => {
-    const testAddress = address('11111111111111111111111111111111');
-
-    const transaction = await sdk.buildReadTransaction(testAddress);
+  test('should open portal session', async () => {
+    const owner = address('11111111111111111111111111111112');
+    const gridId = 1;
+    const transaction = await sdk.openSession(owner, gridId);
 
     expect(transaction).toBeDefined();
     expect(transaction.instructions.length).toBeGreaterThan(0);
-    expect(transaction.blockhash).toBeDefined();
-  }, 30000);
+    expect(transaction.feePayer).toBe(owner);
+  });
 
-  test('should open session', async () => {
+  test('should build delegate transaction', async () => {
     const owner = address('11111111111111111111111111111112');
-    const sessionPDA = await sdk.openSession(owner);
+    const delegatedAccount = address('11111111111111111111111111111113');
+    const gridId = 1;
 
-    expect(sessionPDA).toBeDefined();
-    expect(typeof sessionPDA).toBe('string');
+    const transaction = await sdk.delegate(owner, delegatedAccount, gridId);
+
+    expect(transaction).toBeDefined();
+    expect(transaction.instructions.length).toBeGreaterThan(0);
+    expect(transaction.feePayer).toBe(owner);
   });
 });
-

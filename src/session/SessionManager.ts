@@ -1,36 +1,52 @@
 import { Address, address } from '@solana/addresses';
-import { RouterProgram, SessionParams } from '../programs/router';
+import {
+  PortalProgram,
+  OpenSessionParams,
+  PORTAL_PROGRAM_ID,
+} from '../programs/portal';
 
 export interface Session {
   pda: Address;
   gridId: number;
   owner: Address;
-  feeBudget: bigint;
+  feeCap: bigint;
   ttlSlots: bigint;
   createdAt: number;
   status: 'active' | 'expired' | 'closed';
 }
 
+export interface OpenSessionParamsSDK {
+  owner: Address;
+  gridId: number;
+  ttlSlots?: bigint;
+  feeCap?: bigint;
+}
+
 export class SessionManager {
+  private portalProgramId: Address;
   private sessions: Map<string, Session> = new Map();
 
+  constructor(portalProgramId: Address = PORTAL_PROGRAM_ID) {
+    this.portalProgramId = portalProgramId;
+  }
+
   /**
-   * Open a new session for Sonic Grid operations
+   * Open a new session for Portal operations
    * Creates and tracks a session for delegated execution
-   * 
+   *
    * @param params - Session creation parameters
    * @returns Session address
    */
-  async openSession(params: SessionParams): Promise<Address> {
-    const { owner, gridId, feeBudget, ttlSlots } = params;
+  async openSession(params: OpenSessionParamsSDK): Promise<Address> {
+    const { owner, gridId, feeCap = BigInt(1_000_000), ttlSlots = BigInt(2000) } = params;
 
-    const sessionPDA = await RouterProgram.deriveSessionPDA(owner, gridId);
+    const sessionPDA = await PortalProgram.deriveSessionPDA(owner, gridId, this.portalProgramId);
 
     const session: Session = {
       pda: sessionPDA,
       gridId,
       owner,
-      feeBudget,
+      feeCap,
       ttlSlots,
       createdAt: Date.now(),
       status: 'active',
@@ -40,7 +56,7 @@ export class SessionManager {
 
     console.log(`✓ Session opened: ${sessionPDA}`);
     console.log(`  Grid ID: ${gridId}`);
-    console.log(`  Fee Budget: ${feeBudget} lamports`);
+    console.log(`  Fee Cap: ${feeCap} lamports`);
     console.log(`  TTL: ${ttlSlots} slots`);
 
     return sessionPDA;
@@ -87,4 +103,3 @@ export class SessionManager {
     );
   }
 }
-

@@ -1,55 +1,41 @@
 /**
- * Account Resolver - 3-Tier Read Strategy
- * Implements the fallback chain: Sonic Grid → HSSN → Solana L1
+ * Account Resolver - 2-Tier Read Strategy
+ * Implements the fallback chain: Ephemeral Rollup → Solana L1
  */
 
 import { Address } from '@solana/addresses';
 import { Rpc, SolanaRpcApi } from '@solana/rpc';
 import { AccountInfo } from '../types';
-import { SonicReader } from './SonicReader';
-import { HSSNReader } from './HSSNReader';
+import { EphemeralRollupReader } from './EphemeralRollupReader';
 
 export class AccountResolver {
-  private sonicReader: SonicReader;
-  private hssnReader: HSSNReader;
+  private ephemeralRollupReader: EphemeralRollupReader;
   private solanaRpc: Rpc<SolanaRpcApi>;
 
   constructor(
-    sonicReader: SonicReader,
-    hssnReader: HSSNReader,
+    ephemeralRollupReader: EphemeralRollupReader,
     solanaRpc: Rpc<SolanaRpcApi>
   ) {
-    this.sonicReader = sonicReader;
-    this.hssnReader = hssnReader;
+    this.ephemeralRollupReader = ephemeralRollupReader;
     this.solanaRpc = solanaRpc;
   }
 
   /**
-   * Resolve account information using 3-tier fallback strategy:
-   * Sonic Grid → HSSN → Solana L1
-   * 
+   * Resolve account information using 2-tier fallback strategy:
+   * Ephemeral Rollup → Solana L1
+   *
    * @param address - Account address to resolve
    * @returns Account information with source indicator
    */
   async resolve(address: Address): Promise<AccountInfo> {
     try {
-      const sonicAccount = await this.sonicReader.getAccountInfo(address);
-      if (sonicAccount) {
-        console.log(`✓ Account resolved from Sonic Grid: ${address}`);
-        return sonicAccount;
+      const account = await this.ephemeralRollupReader.getAccountInfo(address);
+      if (account) {
+        console.log(`✓ Account resolved from Ephemeral Rollup: ${address}`);
+        return account;
       }
     } catch (error) {
-      console.warn('Sonic Grid unavailable, trying HSSN:', error);
-    }
-
-    try {
-      const hssnAccount = await this.hssnReader.getAccountInfo(address);
-      if (hssnAccount) {
-        console.log(`✓ Account resolved from HSSN: ${address}`);
-        return hssnAccount;
-      }
-    } catch (error) {
-      console.warn('HSSN unavailable, using Solana L1:', error);
+      console.warn('Ephemeral Rollup unavailable, using Solana L1:', error);
     }
 
     try {
@@ -102,4 +88,3 @@ export class AccountResolver {
     return results;
   }
 }
-

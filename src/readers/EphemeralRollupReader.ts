@@ -1,20 +1,20 @@
 /**
- * Sonic Grid Account Reader
- * Handles reading account data directly from Sonic Grid cache
+ * Ephemeral Rollup Account Reader
+ * Handles reading account data from Ephemeral Rollup RPC
  */
 
 import { Address } from '@solana/addresses';
 import axios, { AxiosInstance } from 'axios';
-import { AccountInfo, SonicAccountResponse } from '../types';
+import { AccountInfo, EphemeralRollupAccountResponse } from '../types';
 
-export class SonicReader {
+export class EphemeralRollupReader {
   private client: AxiosInstance;
-  private sonicRpcUrl: string;
+  private rpcUrl: string;
 
-  constructor(sonicRpcUrl: string) {
-    this.sonicRpcUrl = sonicRpcUrl;
+  constructor(rpcUrl: string) {
+    this.rpcUrl = rpcUrl;
     this.client = axios.create({
-      baseURL: sonicRpcUrl,
+      baseURL: rpcUrl,
       timeout: 10000,
       headers: {
         'Content-Type': 'application/json',
@@ -23,17 +23,13 @@ export class SonicReader {
   }
 
   /**
-   * Get account information from Sonic Grid cache
+   * Get account information from Ephemeral Rollup RPC
    * @param address - Account address
-   * @param gridId - Grid identifier (default: 1)
    * @returns Account information or null if not found
    */
-  async getAccountInfo(
-    address: Address,
-    gridId: number = 1
-  ): Promise<AccountInfo | null> {
+  async getAccountInfo(address: Address): Promise<AccountInfo | null> {
     try {
-      const response = await this.client.post<SonicAccountResponse>('', {
+      const response = await this.client.post<EphemeralRollupAccountResponse>('', {
         jsonrpc: '2.0',
         id: 1,
         method: 'getAccountInfo',
@@ -58,10 +54,10 @@ export class SonicReader {
         lamports: BigInt(result.lamports),
         owner: result.owner as Address,
         slot: BigInt(response.data.result.context.slot),
-        source: 'sonic',
+        source: 'ephemeral-rollup',
       };
     } catch (error) {
-      console.error('Error fetching from Sonic Grid:', error);
+      console.error('Error fetching from Ephemeral Rollup:', error);
       return null;
     }
   }
@@ -71,9 +67,7 @@ export class SonicReader {
    * @param addresses - Array of account addresses
    * @returns Array of account information (null for not found)
    */
-  async getMultipleAccounts(
-    addresses: Address[]
-  ): Promise<(AccountInfo | null)[]> {
+  async getMultipleAccounts(addresses: Address[]): Promise<(AccountInfo | null)[]> {
     try {
       const response = await this.client.post('', {
         jsonrpc: '2.0',
@@ -102,18 +96,18 @@ export class SonicReader {
             lamports: BigInt(account.lamports),
             owner: account.owner as Address,
             slot: BigInt(response.data.result.context.slot),
-            source: 'sonic',
+            source: 'ephemeral-rollup',
           };
         }
       );
     } catch (error) {
-      console.error('Error fetching multiple accounts from Sonic Grid:', error);
+      console.error('Error fetching multiple accounts from Ephemeral Rollup:', error);
       return addresses.map(() => null);
     }
   }
 
   /**
-   * Check connection to Sonic Grid
+   * Check connection to Ephemeral Rollup
    */
   async isHealthy(): Promise<boolean> {
     try {
@@ -128,4 +122,3 @@ export class SonicReader {
     }
   }
 }
-

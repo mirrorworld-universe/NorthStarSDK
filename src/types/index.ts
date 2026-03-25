@@ -3,10 +3,9 @@
  */
 
 import { Address } from '@solana/addresses';
-import { Commitment } from '@solana/rpc-types';
 
 /**
- * Account information from Sonic Grid or HSSN
+ * Account information from Ephemeral Rollup or Solana
  */
 export interface AccountInfo {
   address: Address;
@@ -15,27 +14,13 @@ export interface AccountInfo {
   lamports: bigint;
   owner: Address;
   slot: bigint;
-  source: 'sonic' | 'hssn' | 'solana';
+  source: 'ephemeral-rollup' | 'solana';
 }
 
 /**
- * HSSN API response for Solana account
+ * Ephemeral Rollup RPC account response
  */
-export interface HSSNAccountResponse {
-  solanaAccount: {
-    address: string;
-    version: string;
-    source: string;
-    slot: string;
-    value: string;
-    creator: string;
-  };
-}
-
-/**
- * Sonic Grid account response
- */
-export interface SonicAccountResponse {
+export interface EphemeralRollupAccountResponse {
   jsonrpc: string;
   result: {
     context: {
@@ -43,7 +28,7 @@ export interface SonicAccountResponse {
       slot: number;
     };
     value: {
-      data: [string, string]; // [data, encoding]
+      data: [string, string];
       executable: boolean;
       lamports: number;
       owner: string;
@@ -56,24 +41,13 @@ export interface SonicAccountResponse {
 }
 
 /**
- * Transaction build parameters
- */
-export interface ReadTransactionParams {
-  gridId: number;
-  accountAddress: Address;
-  sessionPDA?: Address;
-}
-
-/**
  * SDK configuration
  */
 export interface NorthStarConfig {
   solanaNetwork: 'mainnet' | 'testnet' | 'devnet';
-  sonicGridId?: number;
+  portalProgramId?: Address;
   customEndpoints?: {
     solana?: string;
-    sonic?: string;
-    hssn?: string;
+    ephemeralRollup?: string;
   };
 }
-

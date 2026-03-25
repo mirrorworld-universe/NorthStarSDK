@@ -1,26 +1,21 @@
 /**
  * AccountResolver Tests
- * Tests the 3-tier fallback strategy for account resolution
+ * Tests the 2-tier fallback strategy for account resolution
  */
 
 import { address, Address } from '@solana/addresses';
 import { AccountResolver } from '../src/readers/AccountResolver';
-import { SonicReader } from '../src/readers/SonicReader';
-import { HSSNReader } from '../src/readers/HSSNReader';
+import { EphemeralRollupReader } from '../src/readers/EphemeralRollupReader';
 
-// Mock implementations for testing
-jest.mock('../src/readers/SonicReader');
-jest.mock('../src/readers/HSSNReader');
+jest.mock('../src/readers/EphemeralRollupReader');
 
 describe('AccountResolver', () => {
   let accountResolver: AccountResolver;
-  let mockSonicReader: jest.Mocked<SonicReader>;
-  let mockHSSNReader: jest.Mocked<HSSNReader>;
+  let mockEphemeralRollupReader: jest.Mocked<EphemeralRollupReader>;
   let mockRpc: any;
 
   beforeEach(() => {
-    mockSonicReader = new SonicReader('http://test') as jest.Mocked<SonicReader>;
-    mockHSSNReader = new HSSNReader('http://test') as jest.Mocked<HSSNReader>;
+    mockEphemeralRollupReader = new EphemeralRollupReader('http://test') as jest.Mocked<EphemeralRollupReader>;
     mockRpc = {
       getAccountInfo: jest.fn().mockReturnValue({
         send: jest.fn(),
@@ -28,13 +23,12 @@ describe('AccountResolver', () => {
     };
 
     accountResolver = new AccountResolver(
-      mockSonicReader,
-      mockHSSNReader,
+      mockEphemeralRollupReader,
       mockRpc
     );
   });
 
-  test('should resolve from Sonic Grid when available', async () => {
+  test('should resolve from Ephemeral Rollup when available', async () => {
     const testAddress = address('11111111111111111111111111111111');
     const mockAccount = {
       address: testAddress,
@@ -43,58 +37,32 @@ describe('AccountResolver', () => {
       lamports: BigInt(1000000),
       owner: address('11111111111111111111111111111111'),
       slot: BigInt(12345),
-      source: 'sonic' as const,
+      source: 'ephemeral-rollup' as const,
     };
 
-    mockSonicReader.getAccountInfo.mockResolvedValue(mockAccount);
+    mockEphemeralRollupReader.getAccountInfo.mockResolvedValue(mockAccount);
 
     const result = await accountResolver.resolve(testAddress);
 
     expect(result).toEqual(mockAccount);
-    expect(result.source).toBe('sonic');
-    expect(mockSonicReader.getAccountInfo).toHaveBeenCalledWith(testAddress);
-    expect(mockHSSNReader.getAccountInfo).not.toHaveBeenCalled();
+    expect(result.source).toBe('ephemeral-rollup');
+    expect(mockEphemeralRollupReader.getAccountInfo).toHaveBeenCalledWith(testAddress);
     expect(mockRpc.getAccountInfo).not.toHaveBeenCalled();
   });
 
-  test('should fallback to HSSN when Sonic fails', async () => {
-    const testAddress = address('11111111111111111111111111111111');
-    const mockAccount = {
-      address: testAddress,
-      data: new Uint8Array(Buffer.from('test')),
-      executable: false,
-      lamports: BigInt(1000000),
-      owner: address('11111111111111111111111111111111'),
-      slot: BigInt(12345),
-      source: 'hssn' as const,
-    };
-
-    mockSonicReader.getAccountInfo.mockResolvedValue(null);
-    mockHSSNReader.getAccountInfo.mockResolvedValue(mockAccount);
-
-    const result = await accountResolver.resolve(testAddress);
-
-    expect(result).toEqual(mockAccount);
-    expect(result.source).toBe('hssn');
-    expect(mockSonicReader.getAccountInfo).toHaveBeenCalled();
-    expect(mockHSSNReader.getAccountInfo).toHaveBeenCalled();
-    expect(mockRpc.getAccountInfo).not.toHaveBeenCalled();
-  });
-
-  test('should fallback to Solana L1 when both Sonic and HSSN fail', async () => {
+  test('should fallback to Solana L1 when Ephemeral Rollup fails', async () => {
     const testAddress = address('11111111111111111111111111111111');
     const mockSolanaResponse = {
       context: { slot: 12345 },
       value: {
-        data: ['c29sYW5hLWRhdGE=', 'base64'], // 'solana-data' in base64
+        data: ['c29sYW5hLWRhdGE=', 'base64'],
         executable: false,
         lamports: BigInt(2000000),
         owner: address('11111111111111111111111111111111'),
       },
     };
 
-    mockSonicReader.getAccountInfo.mockResolvedValue(null);
-    mockHSSNReader.getAccountInfo.mockResolvedValue(null);
+    mockEphemeralRollupReader.getAccountInfo.mockResolvedValue(null);
     mockRpc.getAccountInfo.mockReturnValue({
       send: jest.fn().mockResolvedValue(mockSolanaResponse),
     });
@@ -103,16 +71,14 @@ describe('AccountResolver', () => {
 
     expect(result.source).toBe('solana');
     expect(result.lamports).toBe(BigInt(2000000));
-    expect(mockSonicReader.getAccountInfo).toHaveBeenCalled();
-    expect(mockHSSNReader.getAccountInfo).toHaveBeenCalled();
+    expect(mockEphemeralRollupReader.getAccountInfo).toHaveBeenCalled();
     expect(mockRpc.getAccountInfo).toHaveBeenCalled();
   });
 
   test('should throw error when all sources fail', async () => {
     const testAddress = address('11111111111111111111111111111111');
 
-    mockSonicReader.getAccountInfo.mockResolvedValue(null);
-    mockHSSNReader.getAccountInfo.mockResolvedValue(null);
+    mockEphemeralRollupReader.getAccountInfo.mockResolvedValue(null);
     mockRpc.getAccountInfo.mockReturnValue({
       send: jest.fn().mockResolvedValue({ value: null }),
     });
@@ -122,4 +88,3 @@ describe('AccountResolver', () => {
     );
   });
 });
-

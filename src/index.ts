@@ -1,25 +1,25 @@
 import { createSolanaRpc, Rpc, SolanaRpcApi } from '@solana/rpc';
 import { Address } from '@solana/addresses';
-import { NETWORKS, SolanaNetwork } from './config/networks';
-import { AccountInfo, NorthStarConfig, ReadTransactionParams } from './types';
-import { SonicReader } from './readers/SonicReader';
-import { HSSNReader } from './readers/HSSNReader';
+import { NETWORKS } from './config/networks';
+import { AccountInfo, NorthStarConfig } from './types';
+import { EphemeralRollupReader } from './readers/EphemeralRollupReader';
 import { AccountResolver } from './readers/AccountResolver';
 import { TransactionBuilder } from './builders/TransactionBuilder';
 import { SessionManager } from './session/SessionManager';
+import { PORTAL_PROGRAM_ID } from './programs/portal';
 
 /**
  * Main North Star SDK class
- * Provides unified interface for Sonic Grid interactions
+ * Provides unified interface for Ephemeral Rollup interactions
  */
 export class NorthStarSDK {
   private rpc: Rpc<SolanaRpcApi>;
-  private sonicReader: SonicReader;
-  private hssnReader: HSSNReader;
+  private ephemeralRollupReader: EphemeralRollupReader;
   private accountResolver: AccountResolver;
   private transactionBuilder: TransactionBuilder;
   private sessionManager: SessionManager;
   private config: NorthStarConfig;
+  private portalProgramId: Address;
 
   /**
    * Initialize North Star SDK
@@ -27,44 +27,37 @@ export class NorthStarSDK {
    */
   constructor(config: NorthStarConfig) {
     this.config = config;
+    this.portalProgramId = config.portalProgramId || PORTAL_PROGRAM_ID;
 
     const solanaRpc =
       config.customEndpoints?.solana ||
       NETWORKS.solana[config.solanaNetwork];
     this.rpc = createSolanaRpc(solanaRpc);
 
-    // Initialize Sonic reader - use matching network
-    const sonicRpc = config.customEndpoints?.sonic || 
-                     NETWORKS.sonic[config.solanaNetwork];
-    this.sonicReader = new SonicReader(sonicRpc);
+    const ephemeralRollupRpc =
+      config.customEndpoints?.ephemeralRollup ||
+      NETWORKS.ephemeralRollup[config.solanaNetwork];
+    this.ephemeralRollupReader = new EphemeralRollupReader(ephemeralRollupRpc);
 
-    // Initialize HSSN reader
-    const hssnRpc = config.customEndpoints?.hssn || NETWORKS.hssn.exapi;
-    this.hssnReader = new HSSNReader(hssnRpc);
-
-    // Initialize account resolver with 3-tier fallback
     this.accountResolver = new AccountResolver(
-      this.sonicReader,
-      this.hssnReader,
+      this.ephemeralRollupReader,
       this.rpc
     );
 
-    // Initialize transaction builder
-    this.transactionBuilder = new TransactionBuilder(this.rpc);
+    this.transactionBuilder = new TransactionBuilder(this.rpc, this.portalProgramId);
 
-    // Initialize session manager
-    this.sessionManager = new SessionManager();
+    this.sessionManager = new SessionManager(this.portalProgramId);
 
     console.log('✓ North Star SDK initialized');
     console.log(`  Solana Network: ${config.solanaNetwork}`);
-    console.log(`  Sonic Grid: ${sonicRpc}`);
-    console.log(`  HSSN: ${hssnRpc}`);
+    console.log(`  Ephemeral Rollup RPC: ${ephemeralRollupRpc}`);
+    console.log(`  Portal Program: ${this.portalProgramId}`);
   }
 
   /**
-   * Get account information using 3-tier fallback strategy
-   * Priority: Sonic Grid → HSSN → Solana L1
-   * 
+   * Get account information using 2-tier fallback strategy
+   * Priority: Ephemeral Rollup → Solana L1
+   *
    * @param address - Account address
    * @returns Account information with source indicator
    */
@@ -82,48 +75,6 @@ export class NorthStarSDK {
   }
 
   /**
-   * Build a read transaction
-   * Constructs a Solana transaction that would read from Sonic Grid
-   * 
-   * @param accountAddress - Account to read
-   * @param gridId - Target grid ID (optional, defaults to config)
-   * @returns Prepared transaction data (not signed)
-   */
-  async buildReadTransaction(
-    accountAddress: Address,
-    gridId?: number
-  ): Promise<any> {
-    const params: ReadTransactionParams = {
-      gridId: gridId || this.config.sonicGridId || 1,
-      accountAddress,
-    };
-
-    return await this.transactionBuilder.buildReadTx(params);
-  }
-
-  /**
-   * Open a session for Sonic Grid operations
-   * Sessions track state for delegated execution
-   * 
-   * @param owner - Session owner address
-   * @param feeBudget - Fee budget in lamports
-   * @param ttlSlots - Time to live in slots
-   * @returns Session address
-   */
-  async openSession(
-    owner: Address,
-    feeBudget: number = 1_000_000,
-    ttlSlots: number = 2000
-  ): Promise<Address> {
-    return await this.sessionManager.openSession({
-      owner,
-      gridId: this.config.sonicGridId || 1,
-      feeBudget: BigInt(feeBudget),
-      ttlSlots: BigInt(ttlSlots),
-    });
-  }
-
-  /**
    * Get Solana RPC instance
    */
   getRpc(): Rpc<SolanaRpcApi> {
@@ -131,16 +82,59 @@ export class NorthStarSDK {
   }
 
   /**
+   * Open a session for Portal operations
+   * Builds a transaction to create a Session and FeeVault
+   *
+   * @param owner - Session owner address
+   * @param gridId - Target grid ID
+   * @param ttlSlots - Time to live in slots (default: 2000)
+   * @param feeCap - Maximum fee budget in lamports (default: 1_000_000)
+   * @returns Prepared transaction data
+   */
+  async openSession(
+    owner: Address,
+    gridId: number,
+    ttlSlots: number = 2000,
+    feeCap: number = 1_000_000
+  ): Promise<any> {
+    return await this.transactionBuilder.buildOpenSessionTx(
+      owner,
+      gridId,
+      BigInt(ttlSlots),
+      BigInt(feeCap)
+    );
+  }
+
+  /**
+   * Delegate an account to another program via Portal
+   * Builds a transaction to create a DelegationRecord
+   *
+   * @param owner - Account owner address
+   * @param delegatedAccount - Account to delegate
+   * @param gridId - Target grid ID
+   * @returns Prepared transaction data
+   */
+  async delegate(
+    owner: Address,
+    delegatedAccount: Address,
+    gridId: number
+  ): Promise<any> {
+    return await this.transactionBuilder.buildDelegateTx(
+      owner,
+      delegatedAccount,
+      gridId
+    );
+  }
+
+  /**
    * Check health of all connected services
    */
   async checkHealth(): Promise<{
     solana: boolean;
-    sonic: boolean;
-    hssn: boolean;
+    ephemeralRollup: boolean;
   }> {
-    const [sonicHealthy, hssnHealthy] = await Promise.all([
-      this.sonicReader.isHealthy(),
-      this.hssnReader.isHealthy(),
+    const [ephemeralRollupHealthy] = await Promise.all([
+      this.ephemeralRollupReader.isHealthy(),
     ]);
 
     let solanaHealthy = false;
@@ -153,15 +147,13 @@ export class NorthStarSDK {
 
     return {
       solana: solanaHealthy,
-      sonic: sonicHealthy,
-      hssn: hssnHealthy,
+      ephemeralRollup: ephemeralRollupHealthy,
     };
   }
 }
 
 // Re-export types and Kit utilities for convenience
 export * from './types';
-export * from './programs/router';
+export * from './programs/portal';
 export { Address } from '@solana/addresses';
 export { createSolanaRpc } from '@solana/rpc';
-
