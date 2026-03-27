@@ -2,7 +2,7 @@
  * Core types and interfaces for North Star SDK
  */
 
-import { Address } from '@solana/addresses';
+import { Address } from "@solana/addresses";
 
 /**
  * Account information from Ephemeral Rollup or Solana
@@ -14,7 +14,7 @@ export interface AccountInfo {
   lamports: bigint;
   owner: Address;
   slot: bigint;
-  source: 'ephemeral-rollup' | 'solana';
+  source: "ephemeral-rollup" | "solana";
 }
 
 /**
@@ -44,7 +44,7 @@ export interface EphemeralRollupAccountResponse {
  * SDK configuration
  */
 export interface NorthStarConfig {
-  solanaNetwork: 'mainnet' | 'testnet' | 'devnet' | 'localnet';
+  solanaNetwork: "mainnet" | "testnet" | "devnet" | "localnet";
   portalProgramId?: Address;
   customEndpoints?: {
     solana?: string;

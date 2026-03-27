@@ -1,9 +1,9 @@
-import { Address, address } from '@solana/addresses';
+import { Address, address } from "@solana/addresses";
 import {
   PortalProgram,
   OpenSessionParams,
   PORTAL_PROGRAM_ID,
-} from '../programs/portal';
+} from "../programs/portal";
 
 export interface Session {
   pda: Address;
@@ -12,7 +12,7 @@ export interface Session {
   feeCap: bigint;
   ttlSlots: bigint;
   createdAt: number;
-  status: 'active' | 'expired' | 'closed';
+  status: "active" | "expired" | "closed";
 }
 
 export interface OpenSessionParamsSDK {
@@ -38,9 +38,18 @@ export class SessionManager {
    * @returns Session address
    */
   async openSession(params: OpenSessionParamsSDK): Promise<Address> {
-    const { owner, gridId, feeCap = BigInt(1_000_000), ttlSlots = BigInt(2000) } = params;
+    const {
+      owner,
+      gridId,
+      feeCap = BigInt(1_000_000),
+      ttlSlots = BigInt(2000),
+    } = params;
 
-    const sessionPDA = await PortalProgram.deriveSessionPDA(owner, gridId, this.portalProgramId);
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
+      owner,
+      gridId,
+      this.portalProgramId,
+    );
 
     const session: Session = {
       pda: sessionPDA,
@@ -49,7 +58,7 @@ export class SessionManager {
       feeCap,
       ttlSlots,
       createdAt: Date.now(),
-      status: 'active',
+      status: "active",
     };
 
     this.sessions.set(sessionPDA, session);
@@ -80,7 +89,7 @@ export class SessionManager {
     const maxAge = Number(session.ttlSlots) * slotDuration;
     const age = Date.now() - session.createdAt;
 
-    return session.status === 'active' && age < maxAge;
+    return session.status === "active" && age < maxAge;
   }
 
   /**
@@ -89,7 +98,7 @@ export class SessionManager {
   async closeSession(sessionPDA: Address): Promise<void> {
     const session = this.sessions.get(sessionPDA);
     if (session) {
-      session.status = 'closed';
+      session.status = "closed";
       console.log(`✓ Session closed: ${sessionPDA}`);
     }
   }
@@ -99,7 +108,7 @@ export class SessionManager {
    */
   getActiveSessions(): Session[] {
     return Array.from(this.sessions.values()).filter(
-      (s) => s.status === 'active'
+      (s) => s.status === "active",
     );
   }
 }

@@ -3,20 +3,20 @@
  * Provides transaction instruction structures for Portal operations
  */
 
+import { deserialize, field, serialize, variant } from "@dao-xyz/borsh";
 import {
-  deserialize,
-  field,
-  serialize,
-  variant,
-} from '@dao-xyz/borsh';
-import { Address, address, getAddressEncoder, getProgramDerivedAddress } from '@solana/addresses';
+  Address,
+  address,
+  getAddressEncoder,
+  getProgramDerivedAddress,
+} from "@solana/addresses";
 
 /**
  * Portal Program ID
  * Default program ID for Portal on local test setup
  */
 const DEFAULT_PORTAL_PROGRAM_ID: Address = address(
-  '5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf'
+  "5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf",
 );
 
 /**
@@ -64,13 +64,13 @@ export interface DelegateParams {
 
 @variant(0)
 class OpenSessionInstruction {
-  @field({ type: 'u64' })
+  @field({ type: "u64" })
   gridId!: bigint;
 
-  @field({ type: 'u64' })
+  @field({ type: "u64" })
   ttlSlots!: bigint;
 
-  @field({ type: 'u64' })
+  @field({ type: "u64" })
   feeCap!: bigint;
 
   constructor(params: OpenSessionParams) {
@@ -82,7 +82,7 @@ class OpenSessionInstruction {
 
 @variant(1)
 class CloseSessionInstruction {
-  @field({ type: 'u64' })
+  @field({ type: "u64" })
   gridId!: bigint;
 
   constructor(params: CloseSessionParams) {
@@ -92,7 +92,7 @@ class CloseSessionInstruction {
 
 @variant(2)
 class DepositFeeInstruction {
-  @field({ type: 'u64' })
+  @field({ type: "u64" })
   lamports!: bigint;
 
   constructor(params: DepositFeeParams) {
@@ -102,7 +102,7 @@ class DepositFeeInstruction {
 
 @variant(3)
 class DelegateInstruction {
-  @field({ type: 'u64' })
+  @field({ type: "u64" })
   gridId!: bigint;
 
   constructor(params: DelegateParams) {
@@ -192,7 +192,7 @@ export class PortalProgram {
   static async deriveSessionPDA(
     owner: Address,
     gridId: number,
-    programId: Address = PORTAL_PROGRAM_ID
+    programId: Address = PORTAL_PROGRAM_ID,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
     const gridIdBytes = new Uint8Array(8);
@@ -201,11 +201,7 @@ export class PortalProgram {
     }
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
-      seeds: [
-        'session',
-        addressEncoder.encode(owner),
-        gridIdBytes,
-      ],
+      seeds: ["session", addressEncoder.encode(owner), gridIdBytes],
     });
     return pda;
   }
@@ -216,15 +212,12 @@ export class PortalProgram {
    */
   static async deriveFeeVaultPDA(
     owner: Address,
-    programId: Address = PORTAL_PROGRAM_ID
+    programId: Address = PORTAL_PROGRAM_ID,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
-      seeds: [
-        'fee_vault',
-        addressEncoder.encode(owner),
-      ],
+      seeds: ["fee_vault", addressEncoder.encode(owner)],
     });
     return pda;
   }
@@ -235,15 +228,12 @@ export class PortalProgram {
    */
   static async deriveDelegationRecordPDA(
     delegatedAccount: Address,
-    programId: Address = PORTAL_PROGRAM_ID
+    programId: Address = PORTAL_PROGRAM_ID,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
-      seeds: [
-        'delegation',
-        addressEncoder.encode(delegatedAccount),
-      ],
+      seeds: ["delegation", addressEncoder.encode(delegatedAccount)],
     });
     return pda;
   }
@@ -255,13 +245,13 @@ export class PortalProgram {
   static async deriveDepositReceiptPDA(
     session: Address,
     recipient: Address,
-    programId: Address = PORTAL_PROGRAM_ID
+    programId: Address = PORTAL_PROGRAM_ID,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
       seeds: [
-        'deposit_receipt',
+        "deposit_receipt",
         addressEncoder.encode(session),
         addressEncoder.encode(recipient),
       ],
@@ -311,10 +301,30 @@ export class PortalProgram {
     return {
       discriminator: data[0],
       owner: data.slice(1, 33),
-      gridId: BigInt(new Uint8Array(data.slice(33, 41)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
-      ttlSlots: BigInt(new Uint8Array(data.slice(41, 49)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
-      feeCap: BigInt(new Uint8Array(data.slice(49, 57)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
-      createdAt: BigInt(new Uint8Array(data.slice(57, 65)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
+      gridId: BigInt(
+        new Uint8Array(data.slice(33, 41)).reduce(
+          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
+          BigInt(0),
+        ),
+      ),
+      ttlSlots: BigInt(
+        new Uint8Array(data.slice(41, 49)).reduce(
+          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
+          BigInt(0),
+        ),
+      ),
+      feeCap: BigInt(
+        new Uint8Array(data.slice(49, 57)).reduce(
+          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
+          BigInt(0),
+        ),
+      ),
+      createdAt: BigInt(
+        new Uint8Array(data.slice(57, 65)).reduce(
+          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
+          BigInt(0),
+        ),
+      ),
       nonce: data.slice(65, 81),
       bump: data[81],
     };
@@ -338,7 +348,12 @@ export class PortalProgram {
     return {
       discriminator: data[0],
       ownerProgram: data.slice(1, 33),
-      gridId: BigInt(new Uint8Array(data.slice(33, 41)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
+      gridId: BigInt(
+        new Uint8Array(data.slice(33, 41)).reduce(
+          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
+          BigInt(0),
+        ),
+      ),
       bump: data[41],
     };
   }
@@ -351,7 +366,12 @@ export class PortalProgram {
       discriminator: data[0],
       session: data.slice(1, 33),
       recipient: data.slice(33, 65),
-      balance: BigInt(new Uint8Array(data.slice(65, 73)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
+      balance: BigInt(
+        new Uint8Array(data.slice(65, 73)).reduce(
+          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
+          BigInt(0),
+        ),
+      ),
       bump: data[73],
     };
   }

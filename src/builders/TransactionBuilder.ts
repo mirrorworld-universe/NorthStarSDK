@@ -3,8 +3,8 @@
  * Constructs Solana transactions for Portal operations
  */
 
-import { Address } from '@solana/addresses';
-import { Rpc, SolanaRpcApi } from '@solana/rpc';
+import { Address } from "@solana/addresses";
+import { Rpc, SolanaRpcApi } from "@solana/rpc";
 import {
   PortalProgram,
   PORTAL_PROGRAM_ID,
@@ -12,14 +12,17 @@ import {
   CloseSessionParams,
   DepositFeeParams,
   DelegateParams,
-} from '../programs/portal';
-import { ReadTransactionParams } from '../types';
+} from "../programs/portal";
+import { ReadTransactionParams } from "../types";
 
 export class TransactionBuilder {
   private rpc: Rpc<SolanaRpcApi>;
   private portalProgramId: Address;
 
-  constructor(rpc: Rpc<SolanaRpcApi>, portalProgramId: Address = PORTAL_PROGRAM_ID) {
+  constructor(
+    rpc: Rpc<SolanaRpcApi>,
+    portalProgramId: Address = PORTAL_PROGRAM_ID,
+  ) {
     this.rpc = rpc;
     this.portalProgramId = portalProgramId;
   }
@@ -34,7 +37,9 @@ export class TransactionBuilder {
   async buildReadTx(params: ReadTransactionParams): Promise<any> {
     const { gridId, accountAddress, sessionPDA } = params;
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const delegateParams: DelegateParams = { gridId };
     const delegateInstruction = PortalProgram.encodeDelegate(delegateParams);
@@ -45,9 +50,7 @@ export class TransactionBuilder {
       instructions: [
         {
           programAddress: this.portalProgramId,
-          accounts: [
-            { address: accountAddress, role: 1 },
-          ],
+          accounts: [{ address: accountAddress, role: 1 }],
           data: delegateInstruction,
         },
       ],
@@ -68,12 +71,21 @@ export class TransactionBuilder {
     owner: Address,
     gridId: number,
     ttlSlots: bigint = BigInt(2000),
-    feeCap: bigint = BigInt(1_000_000)
+    feeCap: bigint = BigInt(1_000_000),
   ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
-    const sessionPDA = await PortalProgram.deriveSessionPDA(owner, gridId, this.portalProgramId);
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(owner, this.portalProgramId);
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
+      owner,
+      gridId,
+      this.portalProgramId,
+    );
+    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
+      owner,
+      this.portalProgramId,
+    );
 
     const openSessionParams: OpenSessionParams = {
       gridId,
@@ -106,14 +118,20 @@ export class TransactionBuilder {
    * @param gridId - Grid ID
    * @returns Prepared transaction data
    */
-  async buildCloseSessionTx(
-    owner: Address,
-    gridId: number
-  ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+  async buildCloseSessionTx(owner: Address, gridId: number): Promise<any> {
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
-    const sessionPDA = await PortalProgram.deriveSessionPDA(owner, gridId, this.portalProgramId);
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(owner, this.portalProgramId);
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
+      owner,
+      gridId,
+      this.portalProgramId,
+    );
+    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
+      owner,
+      this.portalProgramId,
+    );
 
     const closeSessionParams: CloseSessionParams = { gridId };
 
@@ -146,11 +164,16 @@ export class TransactionBuilder {
   async buildDepositFeeTx(
     depositor: Address,
     sessionOwner: Address,
-    lamports: bigint
+    lamports: bigint,
   ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(sessionOwner, this.portalProgramId);
+    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
+      sessionOwner,
+      this.portalProgramId,
+    );
 
     const depositFeeParams: DepositFeeParams = { lamports };
 
@@ -182,11 +205,16 @@ export class TransactionBuilder {
   async buildDelegateTx(
     owner: Address,
     delegatedAccount: Address,
-    gridId: number
+    gridId: number,
   ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
-    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(delegatedAccount, this.portalProgramId);
+    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
+      delegatedAccount,
+      this.portalProgramId,
+    );
 
     const delegateParams: DelegateParams = { gridId };
 
@@ -217,11 +245,16 @@ export class TransactionBuilder {
    */
   async buildUndelegateTx(
     owner: Address,
-    delegatedAccount: Address
+    delegatedAccount: Address,
   ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
-    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(delegatedAccount, this.portalProgramId);
+    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
+      delegatedAccount,
+      this.portalProgramId,
+    );
 
     return {
       blockhash: latestBlockhash.blockhash,

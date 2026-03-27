@@ -3,8 +3,8 @@
  * Uses Anza Kit's getProgramDerivedAddress
  */
 
-import { Address, getProgramDerivedAddress } from '@solana/addresses';
-import { PORTAL_PROGRAM_ID } from '../programs/portal';
+import { Address, getProgramDerivedAddress } from "@solana/addresses";
+import { PORTAL_PROGRAM_ID } from "../programs/portal";
 
 /**
  * Convert number to little-endian bytes for PDA seeds
@@ -25,15 +25,11 @@ function numberToLE(num: number, bytes: number): Uint8Array {
 export async function deriveSessionPDA(
   owner: Address,
   gridId: number,
-  portalProgramId: Address = PORTAL_PROGRAM_ID
+  portalProgramId: Address = PORTAL_PROGRAM_ID,
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,
-    seeds: [
-      'session',
-      owner,
-      numberToLE(gridId, 8)
-    ],
+    seeds: ["session", owner, numberToLE(gridId, 8)],
   });
   return pda;
 }
@@ -44,14 +40,11 @@ export async function deriveSessionPDA(
  */
 export async function deriveFeeVaultPDA(
   owner: Address,
-  portalProgramId: Address = PORTAL_PROGRAM_ID
+  portalProgramId: Address = PORTAL_PROGRAM_ID,
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,
-    seeds: [
-      'fee_vault',
-      owner
-    ],
+    seeds: ["fee_vault", owner],
   });
   return pda;
 }
@@ -62,14 +55,11 @@ export async function deriveFeeVaultPDA(
  */
 export async function deriveDelegationRecordPDA(
   delegatedAccount: Address,
-  portalProgramId: Address = PORTAL_PROGRAM_ID
+  portalProgramId: Address = PORTAL_PROGRAM_ID,
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,
-    seeds: [
-      'delegation',
-      delegatedAccount
-    ],
+    seeds: ["delegation", delegatedAccount],
   });
   return pda;
 }
@@ -81,15 +71,11 @@ export async function deriveDelegationRecordPDA(
 export async function deriveDepositReceiptPDA(
   session: Address,
   recipient: Address,
-  portalProgramId: Address = PORTAL_PROGRAM_ID
+  portalProgramId: Address = PORTAL_PROGRAM_ID,
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,
-    seeds: [
-      'deposit_receipt',
-      session,
-      recipient
-    ],
+    seeds: ["deposit_receipt", session, recipient],
   });
   return pda;
 }

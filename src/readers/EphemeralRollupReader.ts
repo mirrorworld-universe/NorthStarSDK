@@ -3,9 +3,9 @@
  * Handles reading account data from Ephemeral Rollup RPC
  */
 
-import { Address } from '@solana/addresses';
-import axios, { AxiosInstance } from 'axios';
-import { AccountInfo, EphemeralRollupAccountResponse } from '../types';
+import { Address } from "@solana/addresses";
+import axios, { AxiosInstance } from "axios";
+import { AccountInfo, EphemeralRollupAccountResponse } from "../types";
 
 export class EphemeralRollupReader {
   private client: AxiosInstance;
@@ -17,7 +17,7 @@ export class EphemeralRollupReader {
       baseURL: rpcUrl,
       timeout: 10000,
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
       },
     });
   }
@@ -29,17 +29,20 @@ export class EphemeralRollupReader {
    */
   async getAccountInfo(address: Address): Promise<AccountInfo | null> {
     try {
-      const response = await this.client.post<EphemeralRollupAccountResponse>('', {
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'getAccountInfo',
-        params: [
-          address,
-          {
-            encoding: 'base64',
-          },
-        ],
-      });
+      const response = await this.client.post<EphemeralRollupAccountResponse>(
+        "",
+        {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "getAccountInfo",
+          params: [
+            address,
+            {
+              encoding: "base64",
+            },
+          ],
+        },
+      );
 
       if (!response.data.result || !response.data.result.value) {
         return null;
@@ -49,15 +52,15 @@ export class EphemeralRollupReader {
 
       return {
         address: address,
-        data: new Uint8Array(Buffer.from(result.data[0], 'base64')),
+        data: new Uint8Array(Buffer.from(result.data[0], "base64")),
         executable: result.executable,
         lamports: BigInt(result.lamports),
         owner: result.owner as Address,
         slot: BigInt(response.data.result.context.slot),
-        source: 'ephemeral-rollup',
+        source: "ephemeral-rollup",
       };
     } catch (error) {
-      console.error('Error fetching from Ephemeral Rollup:', error);
+      console.error("Error fetching from Ephemeral Rollup:", error);
       return null;
     }
   }
@@ -67,16 +70,18 @@ export class EphemeralRollupReader {
    * @param addresses - Array of account addresses
    * @returns Array of account information (null for not found)
    */
-  async getMultipleAccounts(addresses: Address[]): Promise<(AccountInfo | null)[]> {
+  async getMultipleAccounts(
+    addresses: Address[],
+  ): Promise<(AccountInfo | null)[]> {
     try {
-      const response = await this.client.post('', {
-        jsonrpc: '2.0',
+      const response = await this.client.post("", {
+        jsonrpc: "2.0",
         id: 1,
-        method: 'getMultipleAccounts',
+        method: "getMultipleAccounts",
         params: [
           addresses,
           {
-            encoding: 'base64',
+            encoding: "base64",
           },
         ],
       });
@@ -91,17 +96,20 @@ export class EphemeralRollupReader {
 
           return {
             address: addresses[index],
-            data: new Uint8Array(Buffer.from(account.data[0], 'base64')),
+            data: new Uint8Array(Buffer.from(account.data[0], "base64")),
             executable: account.executable,
             lamports: BigInt(account.lamports),
             owner: account.owner as Address,
             slot: BigInt(response.data.result.context.slot),
-            source: 'ephemeral-rollup',
+            source: "ephemeral-rollup",
           };
-        }
+        },
       );
     } catch (error) {
-      console.error('Error fetching multiple accounts from Ephemeral Rollup:', error);
+      console.error(
+        "Error fetching multiple accounts from Ephemeral Rollup:",
+        error,
+      );
       return addresses.map(() => null);
     }
   }
@@ -111,10 +119,10 @@ export class EphemeralRollupReader {
    */
   async isHealthy(): Promise<boolean> {
     try {
-      const response = await this.client.post('', {
-        jsonrpc: '2.0',
+      const response = await this.client.post("", {
+        jsonrpc: "2.0",
         id: 1,
-        method: 'getHealth',
+        method: "getHealth",
       });
       return response.status === 200;
     } catch {

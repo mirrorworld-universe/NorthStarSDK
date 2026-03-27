@@ -19,12 +19,12 @@ import {
   RpcSubscriptions,
   SolanaRpcSubscriptionsApi,
   TransactionSigner,
-} from '@solana/kit';
-import { NETWORKS } from './config/networks';
-import { AccountInfo, NorthStarConfig } from './types';
-import { EphemeralRollupReader } from './readers/EphemeralRollupReader';
-import { AccountResolver } from './readers/AccountResolver';
-import { PortalProgram } from './programs/portal';
+} from "@solana/kit";
+import { NETWORKS } from "./config/networks";
+import { AccountInfo, NorthStarConfig } from "./types";
+import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
+import { AccountResolver } from "./readers/AccountResolver";
+import { PortalProgram } from "./programs/portal";
 
 export type { Address, TransactionSigner };
 
@@ -34,7 +34,7 @@ export interface TransactionResult {
 }
 
 export interface TransactionOptions {
-  commitment?: 'processed' | 'confirmed' | 'finalized';
+  commitment?: "processed" | "confirmed" | "finalized";
 }
 
 /**
@@ -48,7 +48,9 @@ export class NorthStarSDK {
   private accountResolver: AccountResolver;
   private config: NorthStarConfig;
   private portalProgramId: Address;
-  private sendAndConfirmTransaction: ReturnType<typeof sendAndConfirmTransactionFactory>;
+  private sendAndConfirmTransaction: ReturnType<
+    typeof sendAndConfirmTransactionFactory
+  >;
 
   /**
    * Initialize North Star SDK
@@ -59,11 +61,12 @@ export class NorthStarSDK {
     this.portalProgramId = config.portalProgramId || PortalProgram.PROGRAM_ID;
 
     const solanaRpc =
-      config.customEndpoints?.solana ||
-      NETWORKS.solana[config.solanaNetwork];
+      config.customEndpoints?.solana || NETWORKS.solana[config.solanaNetwork];
     this.rpc = createSolanaRpc(solanaRpc);
 
-    const wsUrl = solanaRpc.replace('https://', 'wss://').replace('http://', 'ws://');
+    const wsUrl = solanaRpc
+      .replace("https://", "wss://")
+      .replace("http://", "ws://");
     this.rpcSubscriptions = createSolanaRpcSubscriptions(wsUrl);
 
     const ephemeralRollupRpc =
@@ -73,7 +76,7 @@ export class NorthStarSDK {
 
     this.accountResolver = new AccountResolver(
       this.ephemeralRollupReader,
-      this.rpc
+      this.rpc,
     );
 
     this.sendAndConfirmTransaction = sendAndConfirmTransactionFactory({
@@ -81,7 +84,7 @@ export class NorthStarSDK {
       rpcSubscriptions: this.rpcSubscriptions,
     });
 
-    console.log('✓ North Star SDK initialized');
+    console.log("✓ North Star SDK initialized");
     console.log(`  Solana Network: ${config.solanaNetwork}`);
     console.log(`  Ephemeral Rollup RPC: ${ephemeralRollupRpc}`);
     console.log(`  Portal Program: ${this.portalProgramId}`);
@@ -99,11 +102,17 @@ export class NorthStarSDK {
    * @param privateKeyBase58 - Base58 encoded private key
    */
   async createKeyPairFromBase58(
-    privateKeyBase58: string
+    privateKeyBase58: string,
   ): Promise<TransactionSigner> {
     const privateKeyBytes = Uint8Array.from(
       // Simple base58 decode for standard Solana private keys
-      privateKeyBase58.split('').map(c => '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'.indexOf(c))
+      privateKeyBase58
+        .split("")
+        .map((c) =>
+          "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".indexOf(
+            c,
+          ),
+        ),
     );
     return await createKeyPairSignerFromPrivateKeyBytes(privateKeyBytes);
   }
@@ -137,7 +146,7 @@ export class NorthStarSDK {
     signer: TransactionSigner,
     gridId: number,
     ttlSlots: number = 2000,
-    feeCap: number = 1_000_000
+    feeCap: number = 1_000_000,
   ): Promise<{
     instructions: any[];
     feePayer: Address;
@@ -147,11 +156,11 @@ export class NorthStarSDK {
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       signer.address,
       gridId,
-      this.portalProgramId
+      this.portalProgramId,
     );
     const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
       signer.address,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -162,16 +171,22 @@ export class NorthStarSDK {
         { address: sessionPDA, role: 1 as const },
         { address: feeVaultPDA, role: 1 as const },
       ],
-      data: PortalProgram.encodeOpenSession({ gridId, ttlSlots: BigInt(ttlSlots), feeCap: BigInt(feeCap) }),
+      data: PortalProgram.encodeOpenSession({
+        gridId,
+        ttlSlots: BigInt(ttlSlots),
+        feeCap: BigInt(feeCap),
+      }),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
     return {
@@ -188,7 +203,7 @@ export class NorthStarSDK {
   async buildDelegate(
     signer: TransactionSigner,
     delegatedAccount: Address,
-    gridId: number
+    gridId: number,
   ): Promise<{
     instructions: any[];
     feePayer: Address;
@@ -197,7 +212,7 @@ export class NorthStarSDK {
   }> {
     const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -211,13 +226,15 @@ export class NorthStarSDK {
       data: PortalProgram.encodeDelegate({ gridId }),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
     return {
@@ -234,7 +251,7 @@ export class NorthStarSDK {
   async buildDepositFee(
     signer: TransactionSigner,
     sessionOwner: Address,
-    lamports: number
+    lamports: number,
   ): Promise<{
     instructions: any[];
     feePayer: Address;
@@ -243,7 +260,7 @@ export class NorthStarSDK {
   }> {
     const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
       sessionOwner,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -256,13 +273,15 @@ export class NorthStarSDK {
       data: PortalProgram.encodeDepositFee({ lamports: BigInt(lamports) }),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
     return {
@@ -278,7 +297,7 @@ export class NorthStarSDK {
    */
   async buildUndelegate(
     signer: TransactionSigner,
-    delegatedAccount: Address
+    delegatedAccount: Address,
   ): Promise<{
     instructions: any[];
     feePayer: Address;
@@ -287,7 +306,7 @@ export class NorthStarSDK {
   }> {
     const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -301,13 +320,15 @@ export class NorthStarSDK {
       data: PortalProgram.encodeUndelegate(),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
     return {
@@ -323,7 +344,7 @@ export class NorthStarSDK {
    */
   async buildCloseSession(
     signer: TransactionSigner,
-    gridId: number
+    gridId: number,
   ): Promise<{
     instructions: any[];
     feePayer: Address;
@@ -333,11 +354,11 @@ export class NorthStarSDK {
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       signer.address,
       gridId,
-      this.portalProgramId
+      this.portalProgramId,
     );
     const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
       signer.address,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -351,13 +372,15 @@ export class NorthStarSDK {
       data: PortalProgram.encodeCloseSession({ gridId }),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
     return {
@@ -376,16 +399,16 @@ export class NorthStarSDK {
     signer: TransactionSigner,
     gridId: number,
     ttlSlots: number = 2000,
-    feeCap: number = 1_000_000
+    feeCap: number = 1_000_000,
   ): Promise<TransactionResult> {
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       signer.address,
       gridId,
-      this.portalProgramId
+      this.portalProgramId,
     );
     const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
       signer.address,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -396,23 +419,32 @@ export class NorthStarSDK {
         { address: sessionPDA, role: 1 as const },
         { address: feeVaultPDA, role: 1 as const },
       ],
-      data: PortalProgram.encodeOpenSession({ gridId, ttlSlots: BigInt(ttlSlots), feeCap: BigInt(feeCap) }),
+      data: PortalProgram.encodeOpenSession({
+        gridId,
+        ttlSlots: BigInt(ttlSlots),
+        feeCap: BigInt(feeCap),
+      }),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
-    const transaction = await signTransactionMessageWithSigners(transactionMessage);
+    const transaction =
+      await signTransactionMessageWithSigners(transactionMessage);
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, { commitment: 'confirmed' });
+    await this.sendAndConfirmTransaction(transaction, {
+      commitment: "confirmed",
+    });
     const signature = getSignatureFromTransaction(transaction);
 
     console.log(`✓ Session opened: ${sessionPDA}`);
@@ -427,11 +459,11 @@ export class NorthStarSDK {
   async delegate(
     signer: TransactionSigner,
     delegatedAccount: Address,
-    gridId: number
+    gridId: number,
   ): Promise<TransactionResult> {
     const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -445,20 +477,25 @@ export class NorthStarSDK {
       data: PortalProgram.encodeDelegate({ gridId }),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
-    const transaction = await signTransactionMessageWithSigners(transactionMessage);
+    const transaction =
+      await signTransactionMessageWithSigners(transactionMessage);
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, { commitment: 'confirmed' });
+    await this.sendAndConfirmTransaction(transaction, {
+      commitment: "confirmed",
+    });
     const signature = getSignatureFromTransaction(transaction);
 
     console.log(`✓ Account delegated: ${delegatedAccount}`);
@@ -473,11 +510,11 @@ export class NorthStarSDK {
   async depositFee(
     signer: TransactionSigner,
     sessionOwner: Address,
-    lamports: number
+    lamports: number,
   ): Promise<TransactionResult> {
     const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
       sessionOwner,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -490,20 +527,25 @@ export class NorthStarSDK {
       data: PortalProgram.encodeDepositFee({ lamports: BigInt(lamports) }),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
-    const transaction = await signTransactionMessageWithSigners(transactionMessage);
+    const transaction =
+      await signTransactionMessageWithSigners(transactionMessage);
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, { commitment: 'confirmed' });
+    await this.sendAndConfirmTransaction(transaction, {
+      commitment: "confirmed",
+    });
     const signature = getSignatureFromTransaction(transaction);
 
     console.log(`✓ Fee deposited: ${lamports} lamports to ${sessionOwner}`);
@@ -517,11 +559,11 @@ export class NorthStarSDK {
    */
   async undelegate(
     signer: TransactionSigner,
-    delegatedAccount: Address
+    delegatedAccount: Address,
   ): Promise<TransactionResult> {
     const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -535,20 +577,25 @@ export class NorthStarSDK {
       data: PortalProgram.encodeUndelegate(),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
-    const transaction = await signTransactionMessageWithSigners(transactionMessage);
+    const transaction =
+      await signTransactionMessageWithSigners(transactionMessage);
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, { commitment: 'confirmed' });
+    await this.sendAndConfirmTransaction(transaction, {
+      commitment: "confirmed",
+    });
     const signature = getSignatureFromTransaction(transaction);
 
     console.log(`✓ Account undelegated: ${delegatedAccount}`);
@@ -562,16 +609,16 @@ export class NorthStarSDK {
    */
   async closeSession(
     signer: TransactionSigner,
-    gridId: number
+    gridId: number,
   ): Promise<TransactionResult> {
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       signer.address,
       gridId,
-      this.portalProgramId
+      this.portalProgramId,
     );
     const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
       signer.address,
-      this.portalProgramId
+      this.portalProgramId,
     );
 
     const instruction = {
@@ -585,20 +632,25 @@ export class NorthStarSDK {
       data: PortalProgram.encodeCloseSession({ gridId }),
     };
 
-    const { value: latestBlockhash } = await this.rpc.getLatestBlockhash().send();
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
 
     const transactionMessage = pipe(
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx)
+      (tx) => appendTransactionMessageInstructions([instruction], tx),
     );
 
-    const transaction = await signTransactionMessageWithSigners(transactionMessage);
+    const transaction =
+      await signTransactionMessageWithSigners(transactionMessage);
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, { commitment: 'confirmed' });
+    await this.sendAndConfirmTransaction(transaction, {
+      commitment: "confirmed",
+    });
     const signature = getSignatureFromTransaction(transaction);
 
     console.log(`✓ Session closed: ${sessionPDA}`);
@@ -634,6 +686,6 @@ export class NorthStarSDK {
 }
 
 // Re-export types and Kit utilities for convenience
-export * from './types';
-export { PORTAL_PROGRAM_ID, PortalProgram } from './programs/portal';
-export { createSolanaRpc } from '@solana/kit';
+export * from "./types";
+export { PORTAL_PROGRAM_ID, PortalProgram } from "./programs/portal";
+export { createSolanaRpc } from "@solana/kit";
