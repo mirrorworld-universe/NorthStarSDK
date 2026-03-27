@@ -3,42 +3,36 @@
  * Provides transaction instruction structures for Portal operations
  */
 
-import { Address, address, getProgramDerivedAddress } from '@solana/addresses';
+import {
+  deserialize,
+  field,
+  serialize,
+  variant,
+} from '@dao-xyz/borsh';
+import { Address, address, getAddressEncoder, getProgramDerivedAddress } from '@solana/addresses';
 
 /**
  * Portal Program ID
- * Placeholder - replace with actual deployed program ID
+ * Default program ID for Portal on local test setup
  */
-export const PORTAL_PROGRAM_ID: Address = address(
-  'Portal1111111111111111111111111111111111111'
+const DEFAULT_PORTAL_PROGRAM_ID: Address = address(
+  '5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf'
 );
 
 /**
- * Portal instruction discriminators
+ * Get the Portal Program ID
  */
-export enum PortalInstructionKind {
-  OpenSession = 0,
-  CloseSession = 1,
-  DepositFee = 2,
-  Delegate = 3,
-  Undelegate = 4,
+export function getPortalProgramId(): Address {
+  return DEFAULT_PORTAL_PROGRAM_ID;
 }
 
-/**
- * Portal instruction types
- */
-export type PortalInstruction =
-  | { kind: PortalInstructionKind.OpenSession; params: OpenSessionParams }
-  | { kind: PortalInstructionKind.CloseSession; params: CloseSessionParams }
-  | { kind: PortalInstructionKind.DepositFee; params: DepositFeeParams }
-  | { kind: PortalInstructionKind.Delegate; params: DelegateParams }
-  | { kind: PortalInstructionKind.Undelegate };
+export const PORTAL_PROGRAM_ID: Address = DEFAULT_PORTAL_PROGRAM_ID;
 
 /**
- * OpenSession instruction parameters
+ * Portal instruction parameters
  */
 export interface OpenSessionParams {
-  gridId: number;
+  gridId: number | bigint;
   ttlSlots: bigint;
   feeCap: bigint;
 }
@@ -47,7 +41,7 @@ export interface OpenSessionParams {
  * CloseSession instruction parameters
  */
 export interface CloseSessionParams {
-  gridId: number;
+  gridId: number | bigint;
 }
 
 /**
@@ -61,8 +55,63 @@ export interface DepositFeeParams {
  * Delegate instruction parameters
  */
 export interface DelegateParams {
-  gridId: number;
+  gridId: number | bigint;
 }
+
+/**
+ * Instruction variants for borsh serialization
+ */
+
+@variant(0)
+class OpenSessionInstruction {
+  @field({ type: 'u64' })
+  gridId!: bigint;
+
+  @field({ type: 'u64' })
+  ttlSlots!: bigint;
+
+  @field({ type: 'u64' })
+  feeCap!: bigint;
+
+  constructor(params: OpenSessionParams) {
+    this.gridId = BigInt(params.gridId);
+    this.ttlSlots = params.ttlSlots;
+    this.feeCap = params.feeCap;
+  }
+}
+
+@variant(1)
+class CloseSessionInstruction {
+  @field({ type: 'u64' })
+  gridId!: bigint;
+
+  constructor(params: CloseSessionParams) {
+    this.gridId = BigInt(params.gridId);
+  }
+}
+
+@variant(2)
+class DepositFeeInstruction {
+  @field({ type: 'u64' })
+  lamports!: bigint;
+
+  constructor(params: DepositFeeParams) {
+    this.lamports = params.lamports;
+  }
+}
+
+@variant(3)
+class DelegateInstruction {
+  @field({ type: 'u64' })
+  gridId!: bigint;
+
+  constructor(params: DelegateParams) {
+    this.gridId = BigInt(params.gridId);
+  }
+}
+
+@variant(4)
+class UndelegateInstruction {}
 
 /**
  * Session state account
@@ -74,7 +123,7 @@ export interface Session {
   ttlSlots: bigint;
   feeCap: bigint;
   createdAt: bigint;
-  nonce: bigint;
+  nonce: Uint8Array;
   bump: number;
 }
 
@@ -128,26 +177,14 @@ export const DELEGATION_RECORD_DISCRIMINATOR = 3;
  */
 export const DEPOSIT_RECEIPT_DISCRIMINATOR = 4;
 
-function numberToLE(num: number, bytes: number): Uint8Array {
-  const arr = new Uint8Array(bytes);
-  for (let i = 0; i < bytes; i++) {
-    arr[i] = num & 0xff;
-    num = num >> 8;
-  }
-  return arr;
-}
-
-function bigintToLE(num: bigint, bytes: number): Uint8Array {
-  const arr = new Uint8Array(bytes);
-  let n = num;
-  for (let i = 0; i < bytes; i++) {
-    arr[i] = Number(n & BigInt(0xff));
-    n = n >> BigInt(8);
-  }
-  return arr;
-}
-
 export class PortalProgram {
+  /**
+   * Portal Program ID
+   */
+  static get PROGRAM_ID(): Address {
+    return DEFAULT_PORTAL_PROGRAM_ID;
+  }
+
   /**
    * Derive Session PDA address
    * Seeds: ["session", owner, grid_id (8 bytes LE)]
@@ -157,9 +194,18 @@ export class PortalProgram {
     gridId: number,
     programId: Address = PORTAL_PROGRAM_ID
   ): Promise<Address> {
+    const addressEncoder = getAddressEncoder();
+    const gridIdBytes = new Uint8Array(8);
+    for (let i = 0; i < 8; i++) {
+      gridIdBytes[i] = (gridId >> (8 * i)) & 0xff;
+    }
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
-      seeds: ['session', owner, numberToLE(gridId, 8)],
+      seeds: [
+        'session',
+        addressEncoder.encode(owner),
+        gridIdBytes,
+      ],
     });
     return pda;
   }
@@ -172,9 +218,13 @@ export class PortalProgram {
     owner: Address,
     programId: Address = PORTAL_PROGRAM_ID
   ): Promise<Address> {
+    const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
-      seeds: ['fee_vault', owner],
+      seeds: [
+        'fee_vault',
+        addressEncoder.encode(owner),
+      ],
     });
     return pda;
   }
@@ -187,9 +237,13 @@ export class PortalProgram {
     delegatedAccount: Address,
     programId: Address = PORTAL_PROGRAM_ID
   ): Promise<Address> {
+    const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
-      seeds: ['delegation', delegatedAccount],
+      seeds: [
+        'delegation',
+        addressEncoder.encode(delegatedAccount),
+      ],
     });
     return pda;
   }
@@ -203,68 +257,51 @@ export class PortalProgram {
     recipient: Address,
     programId: Address = PORTAL_PROGRAM_ID
   ): Promise<Address> {
+    const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
-      seeds: ['deposit_receipt', session, recipient],
+      seeds: [
+        'deposit_receipt',
+        addressEncoder.encode(session),
+        addressEncoder.encode(recipient),
+      ],
     });
     return pda;
   }
 
   /**
-   * Encode OpenSession instruction data
+   * Encode OpenSession instruction data (borsh serialized)
    */
   static encodeOpenSession(params: OpenSessionParams): Uint8Array {
-    const data = new Uint8Array(1 + 8 + 8 + 8); // discriminator + grid_id + ttl_slots + fee_cap
-    data[0] = PortalInstructionKind.OpenSession;
-    const gridIdBytes = bigintToLE(BigInt(params.gridId), 8);
-    const ttlSlotsBytes = bigintToLE(params.ttlSlots, 8);
-    const feeCapBytes = bigintToLE(params.feeCap, 8);
-    data.set(gridIdBytes, 1);
-    data.set(ttlSlotsBytes, 9);
-    data.set(feeCapBytes, 17);
-    return data;
+    return serialize(new OpenSessionInstruction(params));
   }
 
   /**
-   * Encode CloseSession instruction data
+   * Encode CloseSession instruction data (borsh serialized)
    */
   static encodeCloseSession(params: CloseSessionParams): Uint8Array {
-    const data = new Uint8Array(1 + 8); // discriminator + grid_id
-    data[0] = PortalInstructionKind.CloseSession;
-    const gridIdBytes = bigintToLE(BigInt(params.gridId), 8);
-    data.set(gridIdBytes, 1);
-    return data;
+    return serialize(new CloseSessionInstruction(params));
   }
 
   /**
-   * Encode DepositFee instruction data
+   * Encode DepositFee instruction data (borsh serialized)
    */
   static encodeDepositFee(params: DepositFeeParams): Uint8Array {
-    const data = new Uint8Array(1 + 8); // discriminator + lamports
-    data[0] = PortalInstructionKind.DepositFee;
-    const lamportsBytes = bigintToLE(params.lamports, 8);
-    data.set(lamportsBytes, 1);
-    return data;
+    return serialize(new DepositFeeInstruction(params));
   }
 
   /**
-   * Encode Delegate instruction data
+   * Encode Delegate instruction data (borsh serialized)
    */
   static encodeDelegate(params: DelegateParams): Uint8Array {
-    const data = new Uint8Array(1 + 8); // discriminator + grid_id
-    data[0] = PortalInstructionKind.Delegate;
-    const gridIdBytes = bigintToLE(BigInt(params.gridId), 8);
-    data.set(gridIdBytes, 1);
-    return data;
+    return serialize(new DelegateInstruction(params));
   }
 
   /**
-   * Encode Undelegate instruction data
+   * Encode Undelegate instruction data (borsh serialized)
    */
   static encodeUndelegate(): Uint8Array {
-    const data = new Uint8Array(1);
-    data[0] = PortalInstructionKind.Undelegate;
-    return data;
+    return serialize(new UndelegateInstruction());
   }
 
   /**
@@ -278,7 +315,7 @@ export class PortalProgram {
       ttlSlots: BigInt(new Uint8Array(data.slice(41, 49)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
       feeCap: BigInt(new Uint8Array(data.slice(49, 57)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
       createdAt: BigInt(new Uint8Array(data.slice(57, 65)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
-      nonce: BigInt(new Uint8Array(data.slice(65, 81)).reduce((acc, b, i) => acc + BigInt(b) << BigInt(8 * i), BigInt(0))),
+      nonce: data.slice(65, 81),
       bump: data[81],
     };
   }
