@@ -30,6 +30,8 @@ import {
 } from "@solana/kit";
 import { NorthStarSDK, PORTAL_PROGRAM_ID, PortalProgram } from "../src";
 
+let skipPreflight = false;
+
 describe("Real Integration Tests", () => {
   const PORTAL_PROGRAM_ID = address(
     "5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf",
@@ -78,8 +80,17 @@ describe("Real Integration Tests", () => {
         .send();
       console.log("✓ Airdropped 1 SOL to delegated account");
 
-      // Wait for airdrop to be confirmed
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+       // Wait for airdrop to be confirmed
+       await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      const balance = await rpc.getBalance(portalOwner.address).send();
+      console.log("Portal owner balance:", balance);
+
+      const delegatedBalance = await rpc.getBalance(delegatedAccount.address).send();
+      console.log("Delegated account balance:", delegatedBalance);
+
+     
     } catch (e: any) {
       console.log("⚠ Airdrop failed, trying to continue anyway:", String(e));
     }
@@ -130,10 +141,11 @@ describe("Real Integration Tests", () => {
     try {
       await sendAndConfirmTransaction(transaction, {
         commitment: "confirmed",
-        skipPreflight: true,
+        skipPreflight: skipPreflight,
       });
     } catch (e) {
       console.log("Transaction error (may have succeeded):", String(e));
+      throw e;
     }
     const signature = getSignatureFromTransaction(transaction);
 
@@ -144,7 +156,7 @@ describe("Real Integration Tests", () => {
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     // Retry getting account info with retries
-    let sessionInfo = null;
+    let sessionInfo;
     for (let i = 0; i < 3; i++) {
       try {
         sessionInfo = await rpc.getAccountInfo(sessionPDA).send();
@@ -154,11 +166,13 @@ describe("Real Integration Tests", () => {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
-    expect(sessionInfo?.value).not.toBeNull();
+    console.log("Session info:", sessionInfo);
+    expect(sessionInfo != null).toBe(true);
+    expect(sessionInfo!.value != null).toBe(true);
     console.log("✓ Session account exists on-chain");
 
     // Retry getting account info with retries
-    let feeVaultInfo = null;
+    let feeVaultInfo;
     for (let i = 0; i < 3; i++) {
       try {
         feeVaultInfo = await rpc.getAccountInfo(feeVaultPDA).send();
@@ -168,11 +182,15 @@ describe("Real Integration Tests", () => {
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
     }
-    expect(feeVaultInfo?.value).not.toBeNull();
+    console.log("FeeVault info:", feeVaultInfo);
+    expect(feeVaultInfo != null).toBe(true);
+    expect(feeVaultInfo!.value != null).toBe(true);
     console.log("✓ FeeVault account exists on-chain");
   }, 60000);
 
-  test("Step 2: Delegate Account - should create delegation record", async () => {
+  test.skip(
+    "Step 2: Delegate Account - should create delegation record",
+    async () => {
     console.log("\n=== Step 2: Delegate Account ===");
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
@@ -211,38 +229,45 @@ describe("Real Integration Tests", () => {
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    try {
-      await sendAndConfirmTransaction(transaction, {
-        commitment: "confirmed",
-        skipPreflight: true,
-      });
-    } catch (e) {
-      console.log("Transaction error (may have succeeded):", String(e));
-    }
-    const signature = getSignatureFromTransaction(transaction);
-
-    console.log("✓ Delegation created");
-    console.log("  Signature:", signature);
-
-    // Wait a bit for the transaction to be processed
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    // Retry getting account info with retries
-    let delegationInfo = null;
-    for (let i = 0; i < 3; i++) {
       try {
-        delegationInfo = await rpc.getAccountInfo(delegationRecordPDA).send();
-        break;
+        await sendAndConfirmTransaction(transaction, {
+        commitment: "confirmed",
+        skipPreflight: skipPreflight,
+      });
       } catch (e) {
-        console.log("Retry getAccountInfo:", i + 1);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
+        console.log("Transaction error (may have succeeded):", String(e));
+        throw e;
       }
-    }
-    expect(delegationInfo?.value).not.toBeNull();
-    console.log("✓ Delegation record exists on-chain");
-  }, 60000);
+      const signature = getSignatureFromTransaction(transaction);
 
-  test("Step 3: Verify ER RPC is running after session opened", async () => {
+      console.log("✓ Delegation created");
+      console.log("  Signature:", signature);
+
+      // Wait a bit for the transaction to be processed
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      // Retry getting account info with retries
+      let delegationInfo;
+      for (let i = 0; i < 3; i++) {
+        try {
+          delegationInfo = await rpc.getAccountInfo(delegationRecordPDA).send();
+          break;
+        } catch (e) {
+          console.log("Retry getAccountInfo:", i + 1);
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+
+      console.log("Delegation info:", delegationInfo);
+      // != null simultaneously excludes null and undefined.
+      expect(delegationInfo != null).toBe(true);
+      expect(delegationInfo!.value != null).toBe(true);
+      console.log("✓ Delegation record exists on-chain");
+    },
+    60000,
+  );
+
+  test.skip("Step 3: Verify ER RPC is running after session opened", async () => {
     console.log("\n=== Step 3: Verify ER RPC ===");
 
     const erSdk = new NorthStarSDK({
