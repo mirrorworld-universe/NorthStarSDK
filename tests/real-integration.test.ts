@@ -14,7 +14,6 @@ import {
   address,
   generateKeyPairSigner,
   createSolanaRpc,
-  createSolanaRpcSubscriptions,
   signTransactionMessageWithSigners,
   assertIsTransactionWithBlockhashLifetime,
   assertIsSendableTransaction,
@@ -23,14 +22,18 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   appendTransactionMessageInstructions,
-  sendAndConfirmTransactionFactory,
+  sendTransactionWithoutConfirmingFactory,
   getSignatureFromTransaction,
   getAddressEncoder,
   getProgramDerivedAddress,
 } from "@solana/kit";
 import { NorthStarSDK, PORTAL_PROGRAM_ID, PortalProgram } from "../src";
 
-let skipPreflight = false;
+let skipPreflight = true;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 describe("Real Integration Tests", () => {
   const PORTAL_PROGRAM_ID = address(
@@ -39,9 +42,8 @@ describe("Real Integration Tests", () => {
 
   let sdk: NorthStarSDK;
   let rpc: ReturnType<typeof createSolanaRpc>;
-  let rpcSubscriptions: ReturnType<typeof createSolanaRpcSubscriptions>;
-  let sendAndConfirmTransaction: ReturnType<
-    typeof sendAndConfirmTransactionFactory
+  let sendTransactionWithoutConfirming: ReturnType<
+    typeof sendTransactionWithoutConfirmingFactory
   >;
   let portalOwner: Awaited<ReturnType<typeof generateKeyPairSigner>>;
   let delegatedAccount: Awaited<ReturnType<typeof generateKeyPairSigner>>;
@@ -49,10 +51,8 @@ describe("Real Integration Tests", () => {
 
   beforeAll(async () => {
     rpc = createSolanaRpc("http://127.0.0.1:8899");
-    rpcSubscriptions = createSolanaRpcSubscriptions("ws://127.0.0.1:8899");
-    sendAndConfirmTransaction = sendAndConfirmTransactionFactory({
+    sendTransactionWithoutConfirming = sendTransactionWithoutConfirmingFactory({
       rpc,
-      rpcSubscriptions,
     });
 
     sdk = new NorthStarSDK({
@@ -82,7 +82,7 @@ describe("Real Integration Tests", () => {
 
 
        // Wait for airdrop to be confirmed
-       await new Promise((resolve) => setTimeout(resolve, 1000));
+       await sleep(1000);
 
       const balance = await rpc.getBalance(portalOwner.address).send();
       console.log("Portal owner balance:", balance);
@@ -139,7 +139,7 @@ describe("Real Integration Tests", () => {
     assertIsTransactionWithBlockhashLifetime(transaction);
 
     try {
-      await sendAndConfirmTransaction(transaction, {
+      await sendAndConfirmTransactionWithoutWebsocket(transaction, {
         commitment: "confirmed",
         skipPreflight: skipPreflight,
       });
@@ -188,17 +188,20 @@ describe("Real Integration Tests", () => {
     console.log("✓ FeeVault account exists on-chain");
   }, 60000);
 
-  test.skip(
+  test(
     "Step 2: Delegate Account - should create delegation record",
     async () => {
+    await sleep(3000);
     console.log("\n=== Step 2: Delegate Account ===");
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+    const sessionPDA = await deriveSessionPDA(portalOwner.address, gridId);
 
     const delegationRecordPDA = await deriveDelegationRecordPDA(
-      delegatedAccount.address,
+      sessionPDA,
     );
 
+    console.log("Delegated account (session PDA):", sessionPDA);
     console.log("Delegation record PDA:", delegationRecordPDA);
 
     const instruction = {
@@ -206,7 +209,7 @@ describe("Real Integration Tests", () => {
       programAddress: PORTAL_PROGRAM_ID,
       accounts: [
         { address: portalOwner.address, role: 1 as const },
-        { address: delegatedAccount.address, role: 1 as const },
+        { address: sessionPDA, role: 0 as const },
         { address: PORTAL_PROGRAM_ID, role: 0 as const },
         { address: delegationRecordPDA, role: 1 as const },
         {
@@ -229,19 +232,22 @@ describe("Real Integration Tests", () => {
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-      try {
-        await sendAndConfirmTransaction(transaction, {
+    const signature = getSignatureFromTransaction(transaction);
+    console.log("Signature:", signature);
+
+    try {
+        await sendAndConfirmTransactionWithoutWebsocket(transaction, {
         commitment: "confirmed",
         skipPreflight: skipPreflight,
       });
-      } catch (e) {
-        console.log("Transaction error (may have succeeded):", String(e));
-        throw e;
-      }
-      const signature = getSignatureFromTransaction(transaction);
+    } catch (e) {
+      console.log("Transaction error (may have succeeded):", String(e));
+      throw e;
+    }
+      
 
       console.log("✓ Delegation created");
-      console.log("  Signature:", signature);
+     
 
       // Wait a bit for the transaction to be processed
       await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -283,6 +289,41 @@ describe("Real Integration Tests", () => {
     // ER should be running now that session was opened
     // Note: This may fail if ER takes time to start
   }, 30000);
+
+  async function sendAndConfirmTransactionWithoutWebsocket(
+    transaction: any,
+    config: { commitment: "confirmed" | "finalized"; skipPreflight: boolean },
+  ) {
+    await sendTransactionWithoutConfirming(transaction, config);
+
+    const signature = getSignatureFromTransaction(transaction);
+    const maxAttempts = 40; // ~20 seconds total with 500ms interval
+    for (let i = 0; i < maxAttempts; i++) {
+      const statuses = await (rpc as any).getSignatureStatuses([signature]).send();
+      const status = statuses?.value?.[0];
+
+      if (status?.err) {
+        console.error("Transaction failed on-chain: %o", status?.err);
+        throw new Error(
+          `Transaction failed on-chain: status.err ${safeStringify(status?.err)}`,
+        );
+      }
+
+      if (
+        status &&
+        (status.confirmationStatus === "confirmed" ||
+          status.confirmationStatus === "finalized")
+      ) {
+        return;
+      }
+
+      await sleep(500);
+    }
+
+    throw new Error(
+      `Transaction confirmation timeout (HTTP polling): ${String(signature)}`,
+    );
+  }
 });
 
 async function deriveSessionPDA(owner: any, gridId: number): Promise<any> {
@@ -319,4 +360,12 @@ async function deriveDelegationRecordPDA(delegatedAccount: any): Promise<any> {
     seeds: ["delegation", addressEncoder.encode(delegatedAccount)],
   });
   return pda;
+}
+
+function safeStringify(obj: any): string {
+  try {
+    return JSON.stringify(obj, (_,v) => typeof v === 'bigint' ? v.toString() : v);
+  } catch (e) {
+    return "Error stringifying object";
+  }
 }
