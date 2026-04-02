@@ -47,7 +47,7 @@ describe("Real Integration Tests", () => {
 
   beforeAll(async () => {
     rpc = createSolanaRpc("http://127.0.0.1:8899");
-    rpcSubscriptions = createSolanaRpcSubscriptions("ws://127.0.0.1:8899");
+    rpcSubscriptions = createSolanaRpcSubscriptions("ws://127.0.0.1:8900");
     sendAndConfirmTransaction = sendAndConfirmTransactionFactory({
       rpc,
       rpcSubscriptions,
@@ -183,12 +183,31 @@ describe("Real Integration Tests", () => {
 
     console.log("Delegation record PDA:", delegationRecordPDA);
 
-    const instruction = {
+    // First, assign ownership of the delegated account to the portal program.
+    // The Delegate instruction requires the account to already be owned by
+    // the portal program.
+    const assignInstruction = {
+      version: 0 as const,
+      programAddress: address("11111111111111111111111111111111"),
+      accounts: [
+        {
+          address: delegatedAccount.address,
+          role: 3 as const,
+          signer: delegatedAccount,
+        }, // writable + signer
+      ],
+      data: encodeAssignInstruction(PORTAL_PROGRAM_ID),
+    };
+
+    const delegateInstruction = {
       version: 0 as const,
       programAddress: PORTAL_PROGRAM_ID,
       accounts: [
         { address: portalOwner.address, role: 1 as const },
-        { address: delegatedAccount.address, role: 1 as const },
+        {
+          address: delegatedAccount.address,
+          role: 1 as const,
+        },
         { address: PORTAL_PROGRAM_ID, role: 0 as const },
         { address: delegationRecordPDA, role: 1 as const },
         {
@@ -203,7 +222,11 @@ describe("Real Integration Tests", () => {
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(portalOwner, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+      (tx) =>
+        appendTransactionMessageInstructions(
+          [assignInstruction, delegateInstruction],
+          tx,
+        ),
     );
 
     const transaction =
@@ -294,4 +317,21 @@ async function deriveDelegationRecordPDA(delegatedAccount: any): Promise<any> {
     seeds: ["delegation", addressEncoder.encode(delegatedAccount)],
   });
   return pda;
+}
+
+/**
+ * Encode a SystemProgram.Assign instruction.
+ * Layout: [1, 0, 0, 0] (u32 LE instruction index) + 32 bytes new owner pubkey
+ */
+function encodeAssignInstruction(newOwner: any): Uint8Array {
+  const addressEncoder = getAddressEncoder();
+  const ownerBytes = addressEncoder.encode(newOwner);
+  const data = new Uint8Array(4 + 32);
+  // Instruction index 1 = Assign (little-endian u32)
+  data[0] = 1;
+  data[1] = 0;
+  data[2] = 0;
+  data[3] = 0;
+  data.set(ownerBytes, 4);
+  return data;
 }
