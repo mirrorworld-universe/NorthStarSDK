@@ -10,6 +10,7 @@ import {
   getAddressEncoder,
   getProgramDerivedAddress,
 } from "@solana/addresses";
+import { toU64LE, readU64LE, readU128LE } from "../utils/common";
 
 /**
  * Portal Program ID
@@ -123,7 +124,7 @@ export interface Session {
   ttlSlots: bigint;
   feeCap: bigint;
   createdAt: bigint;
-  nonce: Uint8Array;
+  nonce: bigint;
   bump: number;
 }
 
@@ -177,6 +178,20 @@ export const DELEGATION_RECORD_DISCRIMINATOR = 3;
  */
 export const DEPOSIT_RECEIPT_DISCRIMINATOR = 4;
 
+function assertAccountDataLength(
+  data: Uint8Array,
+  expected: number,
+  accountName: string,
+) {
+  if (data.length < expected) {
+    throw new Error(
+      `Invalid ${accountName} data length: got ${data.length}, expected >= ${expected}`,
+    );
+  }
+}
+
+
+
 export class PortalProgram {
   /**
    * Portal Program ID
@@ -195,13 +210,9 @@ export class PortalProgram {
     programId: Address = PORTAL_PROGRAM_ID,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
-    const gridIdBytes = new Uint8Array(8);
-    for (let i = 0; i < 8; i++) {
-      gridIdBytes[i] = (gridId >> (8 * i)) & 0xff;
-    }
     const [pda] = await getProgramDerivedAddress({
       programAddress: programId,
-      seeds: ["session", addressEncoder.encode(owner), gridIdBytes],
+      seeds: ["session", addressEncoder.encode(owner), toU64LE(gridId)],
     });
     return pda;
   }
@@ -298,34 +309,15 @@ export class PortalProgram {
    * Parse Session account data
    */
   static parseSession(data: Uint8Array): Session {
+    assertAccountDataLength(data, 82, "Session");
     return {
       discriminator: data[0],
       owner: data.slice(1, 33),
-      gridId: BigInt(
-        new Uint8Array(data.slice(33, 41)).reduce(
-          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
-          BigInt(0),
-        ),
-      ),
-      ttlSlots: BigInt(
-        new Uint8Array(data.slice(41, 49)).reduce(
-          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
-          BigInt(0),
-        ),
-      ),
-      feeCap: BigInt(
-        new Uint8Array(data.slice(49, 57)).reduce(
-          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
-          BigInt(0),
-        ),
-      ),
-      createdAt: BigInt(
-        new Uint8Array(data.slice(57, 65)).reduce(
-          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
-          BigInt(0),
-        ),
-      ),
-      nonce: data.slice(65, 81),
+      gridId: readU64LE(data, 33),
+      ttlSlots: readU64LE(data, 41),
+      feeCap: readU64LE(data, 49),
+      createdAt: readU64LE(data, 57),
+      nonce: readU128LE(data, 65),
       bump: data[81],
     };
   }
@@ -334,6 +326,7 @@ export class PortalProgram {
    * Parse FeeVault account data
    */
   static parseFeeVault(data: Uint8Array): FeeVault {
+    assertAccountDataLength(data, 34, "FeeVault");
     return {
       discriminator: data[0],
       authority: data.slice(1, 33),
@@ -345,15 +338,11 @@ export class PortalProgram {
    * Parse DelegationRecord account data
    */
   static parseDelegationRecord(data: Uint8Array): DelegationRecord {
+    assertAccountDataLength(data, 42, "DelegationRecord");
     return {
       discriminator: data[0],
       ownerProgram: data.slice(1, 33),
-      gridId: BigInt(
-        new Uint8Array(data.slice(33, 41)).reduce(
-          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
-          BigInt(0),
-        ),
-      ),
+      gridId: readU64LE(data, 33),
       bump: data[41],
     };
   }
@@ -362,16 +351,12 @@ export class PortalProgram {
    * Parse DepositReceipt account data
    */
   static parseDepositReceipt(data: Uint8Array): DepositReceipt {
+    assertAccountDataLength(data, 74, "DepositReceipt");
     return {
       discriminator: data[0],
       session: data.slice(1, 33),
       recipient: data.slice(33, 65),
-      balance: BigInt(
-        new Uint8Array(data.slice(65, 73)).reduce(
-          (acc, b, i) => (acc + BigInt(b)) << BigInt(8 * i),
-          BigInt(0),
-        ),
-      ),
+      balance: readU64LE(data, 65),
       bump: data[73],
     };
   }

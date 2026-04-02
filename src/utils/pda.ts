@@ -5,18 +5,7 @@
 
 import { Address, getProgramDerivedAddress } from "@solana/addresses";
 import { PORTAL_PROGRAM_ID } from "../programs/portal";
-
-/**
- * Convert number to little-endian bytes for PDA seeds
- */
-function numberToLE(num: number, bytes: number): Uint8Array {
-  const arr = new Uint8Array(bytes);
-  for (let i = 0; i < bytes; i++) {
-    arr[i] = num & 0xff;
-    num = num >> 8;
-  }
-  return arr;
-}
+import { toU64LE } from "./common";
 
 /**
  * Derive SessionPDA address using Kit's PDA derivation
@@ -29,7 +18,7 @@ export async function deriveSessionPDA(
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,
-    seeds: ["session", owner, numberToLE(gridId, 8)],
+    seeds: ["session", owner, toU64LE(gridId)],
   });
   return pda;
 }

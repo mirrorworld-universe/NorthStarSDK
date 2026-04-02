@@ -29,6 +29,7 @@ import {
   getProgramDerivedAddress,
   KeyPairSigner,
 } from "@solana/kit";
+import bs58 from "bs58";
 import { NorthStarSDK, PORTAL_PROGRAM_ID, PortalProgram } from "../src";
 
 let skipPreflight = true;
@@ -39,19 +40,42 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** 将常见账户数据输入统一转换为 Uint8Array */
+function accountDataToBytes(data: any): Uint8Array {
+  if (data instanceof Uint8Array) return data;
+  // 业务约定：纯字符串输入按 bs58 解码
+  if (typeof data === "string") return Uint8Array.from(bs58.decode(data));
+  // if (Array.isArray(data) && typeof data[0] === "string") {
+  //   // RPC 常见格式：["<base64>", "base64"]
+  //   return Uint8Array.from(bs58.decode(data[0]));
+  // }
+  // return new Uint8Array(data as ArrayBuffer);
+  console.error("Invalid account data: ", data);
+  throw new Error("Invalid account data");
+}
+
+function readU64LE(data: Uint8Array, offset: number): bigint {
+  let v = 0n;
+  for (let i = 0; i < 8; i++) {
+    v |= BigInt(data[offset + i]) << BigInt(8 * i);
+  }
+  return v;
+}
+
 describe("Real Integration Tests", () => {
   const PORTAL_PROGRAM_ID = address(
     "5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf",
   );
 
-  
   let sdk: NorthStarSDK;
   let rpc: ReturnType<typeof createSolanaRpc>;
   let sendTransactionWithoutConfirming: ReturnType<
     typeof sendTransactionWithoutConfirmingFactory
   >;
   let portalOwner: KeyPairSigner;
-  let delegatedAccount:KeyPairSigner;
+  let delegatedAccount: KeyPairSigner;
+  /** 单独 owner，用于 close_session（需短 TTL + 等 slot 过期；与主流程的 fee_vault 不冲突） */
+  let closeSessionOwner: KeyPairSigner;
   const gridId = 1;
 
   beforeAll(async () => {
@@ -69,10 +93,12 @@ describe("Real Integration Tests", () => {
 
     portalOwner = await generateKeyPairSigner();
     delegatedAccount = await generateKeyPairSigner();
+    closeSessionOwner = await generateKeyPairSigner();
 
     console.log("\n=== Test Setup ===");
     console.log("Portal owner:", portalOwner.address);
     console.log("Delegated account:", delegatedAccount.address);
+    console.log("Close-session owner:", closeSessionOwner.address);
 
     try {
       // Use direct RPC call for airdrop (faucet)
@@ -85,6 +111,10 @@ describe("Real Integration Tests", () => {
         .send();
       console.log("✓ Airdropped 1 SOL to delegated account");
 
+      await (rpc as any)
+        .requestAirdrop(closeSessionOwner.address, 2000000000)
+        .send();
+      console.log("✓ Airdropped 2 SOL to close-session owner");
 
        // Wait for airdrop to be confirmed
        await sleep(1000);
@@ -179,7 +209,6 @@ describe("Real Integration Tests", () => {
   test(
     "Step 2: Delegate Account - should create delegation record",
     async () => {
-    await sleep(3000);
     console.log("\n=== Step 2: Delegate Account ===");
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
@@ -275,7 +304,246 @@ describe("Real Integration Tests", () => {
     60000,
   );
 
-  test.skip("Step 3: Verify ER RPC is running after session opened", async () => {
+  test("Step 3: Deposit Fee - should create or top up deposit receipt", async () => {
+
+    console.log("\n=== Step 3: Deposit Fee ===");
+
+    const sessionPDA = await deriveSessionPDA(
+      portalOwner.address,
+      gridId,
+    );
+
+    const sessionPDA1 = await PortalProgram.deriveSessionPDA(
+      portalOwner.address,
+      gridId,
+    );
+
+    console.log("Session PDA:", sessionPDA);
+    console.log("Session PDA1:", sessionPDA1);
+
+    const depositReceiptPDA = await PortalProgram.deriveDepositReceiptPDA(
+      sessionPDA,
+      portalOwner.address,
+    );
+
+    const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+
+    const depositInstruction = {
+      programAddress: PORTAL_PROGRAM_ID,
+      accounts: [
+        {
+          address: portalOwner.address,
+          role: AccountRole.WRITABLE_SIGNER,
+        }, // deposit 
+        { address: sessionPDA, role: AccountRole.WRITABLE },
+        { address: depositReceiptPDA, role: AccountRole.WRITABLE },
+        { address: portalOwner.address, role: AccountRole.READONLY }, // receiver
+        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
+      ],
+      data: PortalProgram.encodeDepositFee({ lamports: 500_000n }),
+    };
+
+    const transactionMessage = pipe(
+      createTransactionMessage({ version: 0 }),
+      (tx) => setTransactionMessageFeePayerSigner(portalOwner, tx),
+      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
+      (tx) => appendTransactionMessageInstructions([depositInstruction], tx),
+    );
+
+    const transaction =
+      await signTransactionMessageWithSigners(transactionMessage);
+    assertIsSendableTransaction(transaction);
+    assertIsTransactionWithBlockhashLifetime(transaction);
+
+    await sendAndConfirmTransactionWithoutWebsocket(transaction, {
+      commitment: "confirmed",
+      skipPreflight: skipPreflight,
+    });
+
+    await sleep(1500);
+
+    const receiptInfo = await rpc.getAccountInfo(depositReceiptPDA).send();
+    expect(receiptInfo?.value).not.toBeNull();
+    console.log("Receipt info:", receiptInfo);
+    const raw = accountDataToBytes(receiptInfo!.value!.data);
+    const receiptState = PortalProgram.parseDepositReceipt(raw);
+    expect(receiptState.balance).toBeGreaterThanOrEqual(500_000n);
+    console.log("✓ Deposit receipt balance:", receiptState.balance.toString());
+  }, 60000);
+
+  test("Step 4: Undelegate - should assign account back and clear delegation record", async () => {
+    console.log("\n=== Step 4: Undelegate ===");
+
+    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
+      delegatedAccount.address,
+    );
+
+    const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+
+    const undelegateInstruction = {
+      programAddress: PORTAL_PROGRAM_ID,
+      accounts: [
+        {
+          address: portalOwner.address,
+          role: AccountRole.WRITABLE_SIGNER,
+        },
+        {
+          address: delegatedAccount.address,
+          role: AccountRole.WRITABLE_SIGNER,
+          signer: delegatedAccount,
+        },
+        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
+        { address: delegationRecordPDA, role: AccountRole.WRITABLE },
+        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
+      ],
+      data: PortalProgram.encodeUndelegate(),
+    };
+
+    const transactionMessage = pipe(
+      createTransactionMessage({ version: 0 }),
+      (tx) => setTransactionMessageFeePayerSigner(portalOwner, tx),
+      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
+      (tx) => appendTransactionMessageInstructions([undelegateInstruction], tx),
+    );
+
+    const transaction =
+      await signTransactionMessageWithSigners(transactionMessage);
+    assertIsSendableTransaction(transaction);
+    assertIsTransactionWithBlockhashLifetime(transaction);
+
+    await sendAndConfirmTransactionWithoutWebsocket(transaction, {
+      commitment: "confirmed",
+      skipPreflight: skipPreflight,
+    });
+
+    await sleep(1500);
+
+    const delegatedInfo = await rpc
+      .getAccountInfo(delegatedAccount.address)
+      .send();
+    expect(delegatedInfo?.value?.owner).toBe(SYSTEM_PROGRAM_ID);
+
+    const recordInfo = await rpc.getAccountInfo(delegationRecordPDA).send();
+    const recordData = recordInfo?.value?.data;
+    if (recordData != null) {
+      const raw = accountDataToBytes(recordData);
+      expect(raw.every((b) => b === 0)).toBe(true);
+    }
+    console.log("✓ Undelegate completed");
+  }, 60000);
+
+  test("Step 5: Close Session - should close after TTL (separate owner, short TTL)", async () => {
+    console.log("\n=== Step 5: Close Session (short TTL) ===");
+
+    const closeGridId = 1;
+    const ttlSlots = 15n;
+    const sessionPDA = await deriveSessionPDA(
+      closeSessionOwner.address,
+      closeGridId,
+    );
+    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
+      closeSessionOwner.address,
+    );
+
+    const { value: blockhashOpen } = await rpc.getLatestBlockhash().send();
+    const openIx = {
+      programAddress: PORTAL_PROGRAM_ID,
+      accounts: [
+        { address: closeSessionOwner.address, role: AccountRole.WRITABLE_SIGNER },
+        { address: sessionPDA, role: AccountRole.WRITABLE },
+        { address: feeVaultPDA, role: AccountRole.WRITABLE },
+        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
+      ],
+      data: PortalProgram.encodeOpenSession({
+        gridId: closeGridId,
+        ttlSlots,
+        feeCap: 1_000_000n,
+      }),
+    };
+
+    const openTx = pipe(
+      createTransactionMessage({ version: 0 }),
+      (tx) => setTransactionMessageFeePayerSigner(closeSessionOwner, tx),
+      (tx) => setTransactionMessageLifetimeUsingBlockhash(blockhashOpen, tx),
+      (tx) => appendTransactionMessageInstructions([openIx], tx),
+    );
+    const signedOpen = await signTransactionMessageWithSigners(openTx);
+    assertIsSendableTransaction(signedOpen);
+    assertIsTransactionWithBlockhashLifetime(signedOpen);
+    await sendAndConfirmTransactionWithoutWebsocket(signedOpen, {
+      commitment: "confirmed",
+      skipPreflight: skipPreflight,
+    });
+
+    await sleep(1000);
+    console.log("Session PDA:", sessionPDA);
+    const sessionAccount = await rpc.getAccountInfo(sessionPDA).send();
+    expect(sessionAccount?.value).not.toBeNull();
+    const sessRaw = accountDataToBytes(sessionAccount!.value!.data);
+    console.log("Session raw:", sessRaw);
+    const sessionState = PortalProgram.parseSession(sessRaw);
+    console.log("Session state:", sessionState);
+    const expireAfter = sessionState.createdAt + sessionState.ttlSlots + 1n;
+
+    console.log("Waiting until slot >", expireAfter.toString(), "(session expiry)...");
+    const maxWaitMs = 120_000;
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      const slot = await (rpc as any).getSlot({ commitment: "confirmed" }).send();
+      const s = BigInt(slot);
+      if (s > expireAfter) {
+        console.log("✓ Current slot", s.toString(), "past expiry");
+        break;
+      }
+      await sleep(400);
+    }
+
+    const slotNow = BigInt(
+      await (rpc as any).getSlot({ commitment: "confirmed" }).send(),
+    );
+    expect(slotNow > expireAfter).toBe(true);
+
+    const { value: blockhashClose } = await rpc.getLatestBlockhash().send();
+    const closeIx = {
+      programAddress: PORTAL_PROGRAM_ID,
+      accounts: [
+        {
+          address: closeSessionOwner.address,
+          role: AccountRole.WRITABLE_SIGNER,
+        },
+        { address: sessionPDA, role: AccountRole.WRITABLE },
+        { address: feeVaultPDA, role: AccountRole.WRITABLE },
+        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
+      ],
+      data: PortalProgram.encodeCloseSession({ gridId: closeGridId }),
+    };
+
+    const closeTx = pipe(
+      createTransactionMessage({ version: 0 }),
+      (tx) => setTransactionMessageFeePayerSigner(closeSessionOwner, tx),
+      (tx) => setTransactionMessageLifetimeUsingBlockhash(blockhashClose, tx),
+      (tx) => appendTransactionMessageInstructions([closeIx], tx),
+    );
+    const signedClose = await signTransactionMessageWithSigners(closeTx);
+    assertIsSendableTransaction(signedClose);
+    assertIsTransactionWithBlockhashLifetime(signedClose);
+    await sendAndConfirmTransactionWithoutWebsocket(signedClose, {
+      commitment: "confirmed",
+      skipPreflight: skipPreflight,
+    });
+
+    await sleep(1500);
+
+    const sessionAfter = await rpc.getAccountInfo(sessionPDA).send();
+    const vaultAfter = await rpc.getAccountInfo(feeVaultPDA).send();
+    console.log("Session after:", sessionAfter);
+    console.log("Fee vault after:", vaultAfter);
+    expect(sessionAfter?.value).toBeNull();
+    expect(vaultAfter?.value).toBeNull();
+    console.log("✓ Session and fee vault closed");
+  }, 180000);
+
+  test.skip("Step 6: Verify ER RPC is running after session opened", async () => {
     console.log("\n=== Step 3: Verify ER RPC ===");
 
     const erSdk = new NorthStarSDK({
