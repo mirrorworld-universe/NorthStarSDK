@@ -11,6 +11,7 @@
  */
 
 import {
+  AccountRole,
   address,
   generateKeyPairSigner,
   createSolanaRpc,
@@ -26,10 +27,13 @@ import {
   getSignatureFromTransaction,
   getAddressEncoder,
   getProgramDerivedAddress,
+  KeyPairSigner,
 } from "@solana/kit";
 import { NorthStarSDK, PORTAL_PROGRAM_ID, PortalProgram } from "../src";
 
 let skipPreflight = true;
+const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
+const TOKEN_PROGRAM_ID = address("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -40,13 +44,14 @@ describe("Real Integration Tests", () => {
     "5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf",
   );
 
+  
   let sdk: NorthStarSDK;
   let rpc: ReturnType<typeof createSolanaRpc>;
   let sendTransactionWithoutConfirming: ReturnType<
     typeof sendTransactionWithoutConfirmingFactory
   >;
-  let portalOwner: Awaited<ReturnType<typeof generateKeyPairSigner>>;
-  let delegatedAccount: Awaited<ReturnType<typeof generateKeyPairSigner>>;
+  let portalOwner: KeyPairSigner;
+  let delegatedAccount:KeyPairSigner;
   const gridId = 1;
 
   beforeAll(async () => {
@@ -66,8 +71,8 @@ describe("Real Integration Tests", () => {
     delegatedAccount = await generateKeyPairSigner();
 
     console.log("\n=== Test Setup ===");
-    console.log("Portal owner:", String(portalOwner.address));
-    console.log("Delegated account:", String(delegatedAccount.address));
+    console.log("Portal owner:", portalOwner.address);
+    console.log("Delegated account:", delegatedAccount.address);
 
     try {
       // Use direct RPC call for airdrop (faucet)
@@ -108,14 +113,13 @@ describe("Real Integration Tests", () => {
     console.log("FeeVault PDA:", feeVaultPDA);
 
     const instruction = {
-      version: 0 as const,
       programAddress: PORTAL_PROGRAM_ID,
       accounts: [
         { address: portalOwner.address, role: 1 as const },
         { address: sessionPDA, role: 1 as const },
         { address: feeVaultPDA, role: 1 as const },
         {
-          address: address("11111111111111111111111111111111"),
+          address: SYSTEM_PROGRAM_ID,
           role: 0 as const,
         },
       ],
@@ -156,32 +160,16 @@ describe("Real Integration Tests", () => {
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
     // Retry getting account info with retries
-    let sessionInfo;
-    for (let i = 0; i < 3; i++) {
-      try {
-        sessionInfo = await rpc.getAccountInfo(sessionPDA).send();
-        break;
-      } catch (e) {
-        console.log("Retry getAccountInfo:", i + 1);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    }
+    let sessionInfo = await rpc.getAccountInfo(sessionPDA).send();
+
     console.log("Session info:", sessionInfo);
     expect(sessionInfo != null).toBe(true);
     expect(sessionInfo!.value != null).toBe(true);
     console.log("✓ Session account exists on-chain");
 
     // Retry getting account info with retries
-    let feeVaultInfo;
-    for (let i = 0; i < 3; i++) {
-      try {
-        feeVaultInfo = await rpc.getAccountInfo(feeVaultPDA).send();
-        break;
-      } catch (e) {
-        console.log("Retry feeVaultInfo:", i + 1);
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    }
+    let feeVaultInfo = await rpc.getAccountInfo(feeVaultPDA).send();
+
     console.log("FeeVault info:", feeVaultInfo);
     expect(feeVaultInfo != null).toBe(true);
     expect(feeVaultInfo!.value != null).toBe(true);
@@ -195,27 +183,45 @@ describe("Real Integration Tests", () => {
     console.log("\n=== Step 2: Delegate Account ===");
 
     const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
-    const sessionPDA = await deriveSessionPDA(portalOwner.address, gridId);
 
     const delegationRecordPDA = await deriveDelegationRecordPDA(
-      sessionPDA,
+      delegatedAccount.address,
     );
 
-    console.log("Delegated account (session PDA):", sessionPDA);
+    // System Program `Assign`: 将 delegated account 的 owner 设为 Portal Program（需 delegated 私钥签名）
+    const assignToPortalInstruction = {
+      programAddress: SYSTEM_PROGRAM_ID,
+      accounts: [
+        {
+          address: delegatedAccount.address,
+          role: AccountRole.WRITABLE_SIGNER,
+          signer: delegatedAccount,
+        },
+      ],
+      data: encodeSystemProgramAssign(PORTAL_PROGRAM_ID),
+    };
+
+    console.log("Delegated account (keypair):", delegatedAccount.address);
     console.log("Delegation record PDA:", delegationRecordPDA);
 
-    const instruction = {
-      version: 0 as const,
+    const delegateInstruction = {
       programAddress: PORTAL_PROGRAM_ID,
       accounts: [
-        { address: portalOwner.address, role: 1 as const },
-        { address: sessionPDA, role: 0 as const },
-        { address: PORTAL_PROGRAM_ID, role: 0 as const },
-        { address: delegationRecordPDA, role: 1 as const },
         {
-          address: address("11111111111111111111111111111111"),
-          role: 0 as const,
+          address: portalOwner.address,
+          role: AccountRole.WRITABLE_SIGNER,
         },
+        {
+          address: delegatedAccount.address,
+          role: AccountRole.WRITABLE_SIGNER,
+          signer: delegatedAccount,
+        },
+        {
+          address: SYSTEM_PROGRAM_ID,
+          role: AccountRole.READONLY,
+        },
+        { address: delegationRecordPDA, role: AccountRole.WRITABLE },
+        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY},
       ],
       data: PortalProgram.encodeDelegate({ gridId }),
     };
@@ -224,11 +230,16 @@ describe("Real Integration Tests", () => {
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(portalOwner, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+      (tx) =>
+        appendTransactionMessageInstructions(
+          [assignToPortalInstruction, delegateInstruction],
+          tx,
+        ),
     );
 
     const transaction =
       await signTransactionMessageWithSigners(transactionMessage);
+
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
@@ -253,16 +264,7 @@ describe("Real Integration Tests", () => {
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
       // Retry getting account info with retries
-      let delegationInfo;
-      for (let i = 0; i < 3; i++) {
-        try {
-          delegationInfo = await rpc.getAccountInfo(delegationRecordPDA).send();
-          break;
-        } catch (e) {
-          console.log("Retry getAccountInfo:", i + 1);
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-        }
-      }
+      let delegationInfo = await rpc.getAccountInfo(delegationRecordPDA).send();
 
       console.log("Delegation info:", delegationInfo);
       // != null simultaneously excludes null and undefined.
@@ -351,6 +353,17 @@ function numberToLE(num: number, bytes: number): Uint8Array {
     num = num >> 8;
   }
   return arr;
+}
+
+/**
+ * System Program `Assign` 指令数据（bincode：variant u32 LE = 1，后跟 32 字节新 owner）。
+ */
+function encodeSystemProgramAssign(newProgramOwner: ReturnType<typeof address>): Uint8Array {
+  const addressEncoder = getAddressEncoder();
+  const data = new Uint8Array(4 + 32);
+  new DataView(data.buffer).setUint32(0, 1, true);
+  data.set(addressEncoder.encode(newProgramOwner), 4);
+  return data;
 }
 
 async function deriveDelegationRecordPDA(delegatedAccount: any): Promise<any> {
