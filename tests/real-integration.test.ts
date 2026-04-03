@@ -40,14 +40,14 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 将常见账户数据输入统一转换为 Uint8Array */
+/** Normalize common account `data` shapes to a Uint8Array. */
 function accountDataToBytes(data: any): Uint8Array {
   if (data instanceof Uint8Array) return data;
-  // 业务约定：纯字符串输入按 bs58 解码
+  // Convention: plain strings are bs58-encoded account data.
   if (typeof data === "string") return Uint8Array.from(bs58.decode(data));
   // if (Array.isArray(data) && typeof data[0] === "string") {
-  //   // RPC 常见格式：["<base64>", "base64"]
-  //   return Uint8Array.from(bs58.decode(data[0]));
+  //   // RPC tuple format: ["<base64>", "base64"]
+  //   return Buffer.from(data[0], "base64");
   // }
   // return new Uint8Array(data as ArrayBuffer);
   console.error("Invalid account data: ", data);
@@ -74,7 +74,7 @@ describe("Real Integration Tests", () => {
   >;
   let portalOwner: KeyPairSigner;
   let delegatedAccount: KeyPairSigner;
-  /** 单独 owner，用于 close_session（需短 TTL + 等 slot 过期；与主流程的 fee_vault 不冲突） */
+  /** Separate fee payer for close_session: short TTL + wait for slot expiry; avoids fee_vault conflict with the main flow. */
   let closeSessionOwner: KeyPairSigner;
   const gridId = 1;
 
@@ -217,7 +217,7 @@ describe("Real Integration Tests", () => {
       delegatedAccount.address,
     );
 
-    // System Program `Assign`: 将 delegated account 的 owner 设为 Portal Program（需 delegated 私钥签名）
+    // System Program Assign: set delegated account owner to the Portal program (requires delegated keypair to sign).
     const assignToPortalInstruction = {
       programAddress: SYSTEM_PROGRAM_ID,
       accounts: [
@@ -334,10 +334,10 @@ describe("Real Integration Tests", () => {
         {
           address: portalOwner.address,
           role: AccountRole.WRITABLE_SIGNER,
-        }, // deposit 
+        }, // depositor
         { address: sessionPDA, role: AccountRole.WRITABLE },
         { address: depositReceiptPDA, role: AccountRole.WRITABLE },
-        { address: portalOwner.address, role: AccountRole.READONLY }, // receiver
+        { address: portalOwner.address, role: AccountRole.READONLY }, // recipient
         { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
       ],
       data: PortalProgram.encodeDepositFee({ lamports: 500_000n }),
@@ -544,7 +544,7 @@ describe("Real Integration Tests", () => {
   }, 180000);
 
   test.skip("Step 6: Verify ER RPC is running after session opened", async () => {
-    console.log("\n=== Step 3: Verify ER RPC ===");
+    console.log("\n=== Step 6: Verify ER RPC ===");
 
     const erSdk = new NorthStarSDK({
       solanaNetwork: "localnet",
@@ -624,7 +624,7 @@ function numberToLE(num: number, bytes: number): Uint8Array {
 }
 
 /**
- * System Program `Assign` 指令数据（bincode：variant u32 LE = 1，后跟 32 字节新 owner）。
+ * System Program Assign instruction payload: bincode u32 LE variant = 1, then 32-byte new owner pubkey.
  */
 function encodeSystemProgramAssign(newProgramOwner: ReturnType<typeof address>): Uint8Array {
   const addressEncoder = getAddressEncoder();
