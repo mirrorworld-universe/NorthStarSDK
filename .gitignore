@@ -20,6 +20,8 @@ dist/
 # Test coverage
 coverage/
 
+router/
+
 
 /docs
 
