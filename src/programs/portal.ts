@@ -3,6 +3,7 @@
  * Provides transaction instruction structures for Portal operations
  */
 
+
 import { deserialize, field, serialize, variant } from "@dao-xyz/borsh";
 import {
   Address,
@@ -13,21 +14,16 @@ import {
 import { toU64LE, readU64LE, readU128LE } from "../utils/common";
 
 /**
- * Portal Program ID
- * Default program ID for Portal on local test setup
+ * Portal Program ID — Base58 from `process.env.PORTAL_PROGRAM_ID` (via `.env` or shell).
  */
-const DEFAULT_PORTAL_PROGRAM_ID: Address = address(
-  "5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf",
-);
+export const PORTAL_PROGRAM_ID: Address = address("B519Ej1JFgxWknbUyfSCQ2QX8xTaWP8CAUKFLw2GtgBD");
 
 /**
  * Get the Portal Program ID
  */
 export function getPortalProgramId(): Address {
-  return DEFAULT_PORTAL_PROGRAM_ID;
+  return PORTAL_PROGRAM_ID;
 }
-
-export const PORTAL_PROGRAM_ID: Address = DEFAULT_PORTAL_PROGRAM_ID;
 
 /**
  * Portal instruction parameters
@@ -112,7 +108,7 @@ class DelegateInstruction {
 }
 
 @variant(4)
-class UndelegateInstruction {}
+class UndelegateInstruction { }
 
 /**
  * Session state account
@@ -197,7 +193,7 @@ export class PortalProgram {
    * Portal Program ID
    */
   static get PROGRAM_ID(): Address {
-    return DEFAULT_PORTAL_PROGRAM_ID;
+    return PORTAL_PROGRAM_ID;
   }
 
   /**

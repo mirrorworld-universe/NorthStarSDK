@@ -6,14 +6,19 @@
  * - A Solana validator running with --portal flag set
  * - Portal program deployed at the configured program ID
  * - Solana RPC accessible (default: http://localhost:8899)
+ * - Funding: set TRANSFER_SOURCE_PRIVATE_KEY (base58) in .env; optional
+ *   TRANSFER_SOURCE_ADDRESS (default A8WbfsEkdnFwsxvtDBXuirUnXjriAwQWkc6trVWsTgK5) must match the keypair.
  *
  * Run with: npm run test:integration
  */
 
 import {
   AccountRole,
+  Address,
   address,
   generateKeyPairSigner,
+  createKeyPairSignerFromBytes,
+  createKeyPairSignerFromPrivateKeyBytes,
   createSolanaRpc,
   signTransactionMessageWithSigners,
   assertIsTransactionWithBlockhashLifetime,
@@ -31,6 +36,8 @@ import {
 } from "@solana/kit";
 import bs58 from "bs58";
 import { NorthStarSDK, PORTAL_PROGRAM_ID, PortalProgram } from "../src";
+import { config } from "dotenv";
+config();
 
 let skipPreflight = true;
 const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
@@ -61,11 +68,130 @@ function readU64LE(data: Uint8Array, offset: number): bigint {
   }
   return v;
 }
+// validator rpc: https://api.devnet.sonic.game    8899
+// ephemeral rollup rpc: https://ephemeral.devnet.sonic.game  8910
+// portal program id: address("5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf")
+// const PORTAL_PROGRAM_ID = address("B519Ej1JFgxWknbUyfSCQ2QX8xTaWP8CAUKFLw2GtgBD");
+// const PORTAL_PROGRAM_ID = address("B519Ej1JFgxWknbUyfSCQ2QX8xTaWP8CAUKFLw2GtgBD");
+const EPHEMERAL_ROLLUP_RPC = "https://ephemeral.devnet.sonic.game";
+const VALIDATOR_RPC = "https://api.devnet.sonic.game";
+
+/** Default funding wallet (devnet); override with TRANSFER_SOURCE_ADDRESS */
+const DEFAULT_TRANSFER_SOURCE_ADDRESS =
+  "A8WbfsEkdnFwsxvtDBXuirUnXjriAwQWkc6trVWsTgK5";
+
+function getTransferSourceAddress(): Address {
+  const raw = process.env.TRANSFER_SOURCE_ADDRESS?.trim();
+  return address(raw || DEFAULT_TRANSFER_SOURCE_ADDRESS);
+}
+
+async function loadFundingSignerFromEnv(): Promise<KeyPairSigner> {
+  const secret = process.env.TRANSFER_SOURCE_PRIVATE_KEY?.trim();
+  if (!secret) {
+    throw new Error(
+      "TRANSFER_SOURCE_PRIVATE_KEY is required in .env (base58-encoded 32-byte seed or 64-byte keypair).",
+    );
+  }
+  const bytes = Uint8Array.from(bs58.decode(secret));
+  let signer: KeyPairSigner;
+  if (bytes.length === 64) {
+    signer = await createKeyPairSignerFromBytes(bytes);
+  } else if (bytes.length === 32) {
+    signer = await createKeyPairSignerFromPrivateKeyBytes(bytes);
+  } else {
+    throw new Error(
+      `TRANSFER_SOURCE_PRIVATE_KEY decodes to ${bytes.length} bytes; expected 32 or 64.`,
+    );
+  }
+  const expected = getTransferSourceAddress();
+  if (signer.address !== expected) {
+    throw new Error(
+      `Funding keypair address ${String(signer.address)} does not match TRANSFER_SOURCE_ADDRESS ${String(expected)}`,
+    );
+  }
+  return signer;
+}
+
+/** System Program `Transfer` instruction (bincode-style: u32 LE index 2 + u64 LE lamports). */
+function encodeSystemProgramTransfer(lamports: bigint): Uint8Array {
+  const data = new Uint8Array(4 + 8);
+  new DataView(data.buffer).setUint32(0, 2, true);
+  new DataView(data.buffer).setBigUint64(4, lamports, true);
+  return data;
+}
+
+type SolanaRpc = ReturnType<typeof createSolanaRpc>;
+type SendWithoutConfirming = ReturnType<
+  typeof sendTransactionWithoutConfirmingFactory
+>;
+
+async function pollSignatureConfirmed(
+  rpc: SolanaRpc,
+  signature: string,
+): Promise<void> {
+  const maxAttempts = 40;
+  for (let i = 0; i < maxAttempts; i++) {
+    const statuses = await (rpc as any).getSignatureStatuses([signature]).send();
+    const status = statuses?.value?.[0];
+
+    if (status?.err) {
+      console.error("Transaction failed on-chain: %o", status?.err);
+      throw new Error(
+        `Transaction failed on-chain: status.err ${JSON.stringify(status.err)}`,
+      );
+    }
+
+    if (
+      status &&
+      (status.confirmationStatus === "confirmed" ||
+        status.confirmationStatus === "finalized")
+    ) {
+      return;
+    }
+
+    await sleep(500);
+  }
+
+  throw new Error(
+    `Transaction confirmation timeout (HTTP polling): ${String(signature)}`,
+  );
+}
+
+async function transferLamportsFromFunding(
+  rpc: SolanaRpc,
+  sendTx: SendWithoutConfirming,
+  fundingSigner: KeyPairSigner,
+  to: Address,
+  lamports: bigint,
+): Promise<void> {
+  const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+  const instruction = {
+    programAddress: SYSTEM_PROGRAM_ID,
+    accounts: [
+      { address: fundingSigner.address, role: AccountRole.WRITABLE_SIGNER },
+      { address: to, role: AccountRole.WRITABLE },
+    ],
+    data: encodeSystemProgramTransfer(lamports),
+  };
+
+  const transactionMessage = pipe(
+    createTransactionMessage({ version: 0 }),
+    (tx) => setTransactionMessageFeePayerSigner(fundingSigner, tx),
+    (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
+    (tx) => appendTransactionMessageInstructions([instruction], tx),
+  );
+
+  const transaction =
+    await signTransactionMessageWithSigners(transactionMessage);
+  assertIsSendableTransaction(transaction);
+  assertIsTransactionWithBlockhashLifetime(transaction);
+
+  await sendTx(transaction, { commitment: "confirmed", skipPreflight: true });
+  const signature = getSignatureFromTransaction(transaction);
+  await pollSignatureConfirmed(rpc, signature);
+}
 
 describe("Real Integration Tests", () => {
-  const PORTAL_PROGRAM_ID = address(
-    "5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf",
-  );
 
   let sdk: NorthStarSDK;
   let rpc: ReturnType<typeof createSolanaRpc>;
@@ -79,7 +205,7 @@ describe("Real Integration Tests", () => {
   const gridId = 1;
 
   beforeAll(async () => {
-    rpc = createSolanaRpc("http://127.0.0.1:8899");
+    rpc = createSolanaRpc(VALIDATOR_RPC);
     sendTransactionWithoutConfirming = sendTransactionWithoutConfirmingFactory({
       rpc,
     });
@@ -87,7 +213,8 @@ describe("Real Integration Tests", () => {
     sdk = new NorthStarSDK({
       solanaNetwork: "localnet",
       customEndpoints: {
-        ephemeralRollup: "http://127.0.0.1:8910",
+        solana: VALIDATOR_RPC,
+        ephemeralRollup: EPHEMERAL_ROLLUP_RPC,
       },
     });
 
@@ -101,33 +228,50 @@ describe("Real Integration Tests", () => {
     console.log("Close-session owner:", closeSessionOwner.address);
 
     try {
-      // Use direct RPC call for airdrop (faucet)
-      // Note: Must use number for lamports, not BigInt
-      await (rpc as any).requestAirdrop(portalOwner.address, 2000000000).send();
-      console.log("✓ Airdropped 2 SOL to portal owner");
+      const fundingSigner = await loadFundingSignerFromEnv();
+      console.log(
+        "Funding transfers from",
+        getTransferSourceAddress(),
+        "(override with TRANSFER_SOURCE_ADDRESS)",
+      );
 
-      await (rpc as any)
-        .requestAirdrop(delegatedAccount.address, 1000000000)
-        .send();
-      console.log("✓ Airdropped 1 SOL to delegated account");
+      await transferLamportsFromFunding(
+        rpc,
+        sendTransactionWithoutConfirming,
+        fundingSigner,
+        portalOwner.address,
+        200_000_000n,
+      );
+      console.log("✓ Transferred 2 SOL to portal owner");
 
-      await (rpc as any)
-        .requestAirdrop(closeSessionOwner.address, 2000000000)
-        .send();
-      console.log("✓ Airdropped 2 SOL to close-session owner");
+      await transferLamportsFromFunding(
+        rpc,
+        sendTransactionWithoutConfirming,
+        fundingSigner,
+        delegatedAccount.address,
+        100_000_000n,
+      );
+      console.log("✓ Transferred 1 SOL to delegated account");
 
-      // Wait for airdrop to be confirmed
-      await sleep(1000);
+      await transferLamportsFromFunding(
+        rpc,
+        sendTransactionWithoutConfirming,
+        fundingSigner,
+        closeSessionOwner.address,
+        200_000_000n,
+      );
+      console.log("✓ Transferred 2 SOL to close-session owner");
+
+      await sleep(500);
 
       const balance = await rpc.getBalance(portalOwner.address).send();
       console.log("Portal owner balance:", balance);
 
       const delegatedBalance = await rpc.getBalance(delegatedAccount.address).send();
       console.log("Delegated account balance:", delegatedBalance);
-
-
     } catch (e: any) {
-      console.log("⚠ Airdrop failed, trying to continue anyway:", String(e));
+      console.log("⚠ Funding transfer failed:", String(e));
+      throw e;
     }
   }, 60000);
 
@@ -547,9 +691,9 @@ describe("Real Integration Tests", () => {
     console.log("\n=== Step 6: Verify ER RPC ===");
 
     const erSdk = new NorthStarSDK({
-      solanaNetwork: "localnet",
+      solanaNetwork: "devnet",
       customEndpoints: {
-        ephemeralRollup: "http://127.0.0.1:8910",
+        ephemeralRollup: EPHEMERAL_ROLLUP_RPC,
       },
     });
 
@@ -567,32 +711,7 @@ describe("Real Integration Tests", () => {
     await sendTransactionWithoutConfirming(transaction, config);
 
     const signature = getSignatureFromTransaction(transaction);
-    const maxAttempts = 40; // ~20 seconds total with 500ms interval
-    for (let i = 0; i < maxAttempts; i++) {
-      const statuses = await (rpc as any).getSignatureStatuses([signature]).send();
-      const status = statuses?.value?.[0];
-
-      if (status?.err) {
-        console.error("Transaction failed on-chain: %o", status?.err);
-        throw new Error(
-          `Transaction failed on-chain: status.err ${safeStringify(status?.err)}`,
-        );
-      }
-
-      if (
-        status &&
-        (status.confirmationStatus === "confirmed" ||
-          status.confirmationStatus === "finalized")
-      ) {
-        return;
-      }
-
-      await sleep(500);
-    }
-
-    throw new Error(
-      `Transaction confirmation timeout (HTTP polling): ${String(signature)}`,
-    );
+    await pollSignatureConfirmed(rpc, signature);
   }
 });
 

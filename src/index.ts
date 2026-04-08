@@ -85,7 +85,7 @@ export class NorthStarSDK {
     });
 
     console.log("✓ North Star SDK initialized");
-    console.log(`  Solana Network: ${config.solanaNetwork}`);
+    console.log(`  Solana Network: ${solanaRpc}`);
     console.log(`  Ephemeral Rollup RPC: ${ephemeralRollupRpc}`);
     console.log(`  Portal Program: ${this.portalProgramId}`);
   }
