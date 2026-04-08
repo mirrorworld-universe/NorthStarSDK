@@ -44,11 +44,11 @@ export interface EphemeralRollupAccountResponse {
  * SDK configuration
  */
 export interface NorthStarConfig {
-  solanaNetwork: "mainnet" | "testnet" | "devnet" | "localnet";
-  portalProgramId?: Address;
-  customEndpoints?: {
-    solana?: string;
-    ephemeralRollup?: string;
+  solanaNetwork?: "mainnet" | "testnet" | "devnet" | "localnet";
+  portalProgramId: Address;
+  customEndpoints: {
+    solana: string;
+    ephemeralRollup: string;
   };
 }
 

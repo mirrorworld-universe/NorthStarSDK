@@ -67,6 +67,7 @@ describe("North Star SDK Integration Tests", () => {
       const transaction = await sdk.buildDepositFee(
         ownerSigner,
         ownerSigner.address,
+        1,
         1000000,
       );
 
@@ -111,7 +112,7 @@ describe("North Star SDK Integration Tests", () => {
 
       const instruction = transaction.instructions[0];
       expect(instruction.programAddress).toBeDefined();
-      expect(instruction.accounts.length).toBe(3); // owner, delegatedAccount, delegationRecord
+      expect(instruction.accounts.length).toBe(5); // owner, delegatedAccount, system, delegationRecord, system
     });
 
     test("should build undelegate transaction", async () => {
@@ -126,7 +127,7 @@ describe("North Star SDK Integration Tests", () => {
       expect(transaction.blockhash).toBeDefined();
 
       const instruction = transaction.instructions[0];
-      expect(instruction.accounts.length).toBe(3); // owner, delegatedAccount, delegationRecord
+      expect(instruction.accounts.length).toBe(5); // owner, delegatedAccount, system, delegationRecord, system
     });
   });
 
@@ -146,13 +147,15 @@ describe("North Star SDK Integration Tests", () => {
         role: number;
       }>;
 
-      expect(accounts.length).toBe(3);
+      expect(accounts.length).toBe(4);
       expect(accounts[0].address).toBe(ownerSigner.address); // owner (signer)
       expect(accounts[0].role).toBe(1); // writable + signer
       expect(accounts[1].address).toBeDefined(); // session PDA
       expect(accounts[1].role).toBe(1); // writable
       expect(accounts[2].address).toBeDefined(); // fee vault PDA
       expect(accounts[2].role).toBe(1); // writable
+      expect(accounts[3].address).toBe("11111111111111111111111111111111");
+      expect(accounts[3].role).toBe(0); // system program readonly
     });
 
     test("delegate instruction should have correct accounts", async () => {
@@ -169,19 +172,24 @@ describe("North Star SDK Integration Tests", () => {
         role: number;
       }>;
 
-      expect(accounts.length).toBe(3);
+      expect(accounts.length).toBe(5);
       expect(accounts[0].address).toBe(ownerSigner.address); // owner (signer)
       expect(accounts[0].role).toBe(1);
       expect(accounts[1].address).toBe(delegatedAccountSigner.address); // delegated account
       expect(accounts[1].role).toBe(1);
-      expect(accounts[2].address).toBeDefined(); // delegation record PDA
-      expect(accounts[2].role).toBe(1);
+      expect(accounts[2].address).toBe("11111111111111111111111111111111");
+      expect(accounts[2].role).toBe(0);
+      expect(accounts[3].address).toBeDefined(); // delegation record PDA
+      expect(accounts[3].role).toBe(1);
+      expect(accounts[4].address).toBe("11111111111111111111111111111111");
+      expect(accounts[4].role).toBe(0);
     });
 
     test("depositFee instruction should have correct accounts", async () => {
       const transaction = await sdk.buildDepositFee(
         ownerSigner,
         ownerSigner.address,
+        1,
         500000,
       );
 
@@ -191,11 +199,17 @@ describe("North Star SDK Integration Tests", () => {
         role: number;
       }>;
 
-      expect(accounts.length).toBe(2);
+      expect(accounts.length).toBe(5);
       expect(accounts[0].address).toBe(ownerSigner.address); // depositor (signer)
       expect(accounts[0].role).toBe(1);
-      expect(accounts[1].address).toBeDefined(); // fee vault PDA
+      expect(accounts[1].address).toBeDefined(); // session PDA
       expect(accounts[1].role).toBe(1);
+      expect(accounts[2].address).toBeDefined(); // deposit receipt PDA
+      expect(accounts[2].role).toBe(1);
+      expect(accounts[3].address).toBe(ownerSigner.address); // recipient
+      expect(accounts[3].role).toBe(0);
+      expect(accounts[4].address).toBe("11111111111111111111111111111111");
+      expect(accounts[4].role).toBe(0);
     });
   });
 });

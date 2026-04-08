@@ -28,10 +28,6 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   appendTransactionMessageInstructions,
-  sendTransactionWithoutConfirmingFactory,
-  getSignatureFromTransaction,
-  getAddressEncoder,
-  getProgramDerivedAddress,
   KeyPairSigner,
 } from "@solana/kit";
 import bs58 from "bs58";
@@ -41,7 +37,6 @@ config();
 
 let skipPreflight = true;
 const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
-const TOKEN_PROGRAM_ID = address("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -121,45 +116,9 @@ function encodeSystemProgramTransfer(lamports: bigint): Uint8Array {
 }
 
 type SolanaRpc = ReturnType<typeof createSolanaRpc>;
-type SendWithoutConfirming = ReturnType<
-  typeof sendTransactionWithoutConfirmingFactory
->;
-
-async function pollSignatureConfirmed(
-  rpc: SolanaRpc,
-  signature: string,
-): Promise<void> {
-  const maxAttempts = 40;
-  for (let i = 0; i < maxAttempts; i++) {
-    const statuses = await (rpc as any).getSignatureStatuses([signature]).send();
-    const status = statuses?.value?.[0];
-
-    if (status?.err) {
-      console.error("Transaction failed on-chain: %o", status?.err);
-      throw new Error(
-        `Transaction failed on-chain: status.err ${JSON.stringify(status.err)}`,
-      );
-    }
-
-    if (
-      status &&
-      (status.confirmationStatus === "confirmed" ||
-        status.confirmationStatus === "finalized")
-    ) {
-      return;
-    }
-
-    await sleep(500);
-  }
-
-  throw new Error(
-    `Transaction confirmation timeout (HTTP polling): ${String(signature)}`,
-  );
-}
-
 async function transferLamportsFromFunding(
+  sdk: NorthStarSDK,
   rpc: SolanaRpc,
-  sendTx: SendWithoutConfirming,
   fundingSigner: KeyPairSigner,
   to: Address,
   lamports: bigint,
@@ -186,18 +145,16 @@ async function transferLamportsFromFunding(
   assertIsSendableTransaction(transaction);
   assertIsTransactionWithBlockhashLifetime(transaction);
 
-  await sendTx(transaction, { commitment: "confirmed", skipPreflight: true });
-  const signature = getSignatureFromTransaction(transaction);
-  await pollSignatureConfirmed(rpc, signature);
+  await sdk.sendAndConfirmTransactionWithoutWebsocket(transaction, {
+    commitment: "confirmed",
+    skipPreflight: true,
+  });
 }
 
 describe("Real Integration Tests", () => {
 
   let sdk: NorthStarSDK;
   let rpc: ReturnType<typeof createSolanaRpc>;
-  let sendTransactionWithoutConfirming: ReturnType<
-    typeof sendTransactionWithoutConfirmingFactory
-  >;
   let portalOwner: KeyPairSigner;
   let delegatedAccount: KeyPairSigner;
   /** Separate fee payer for close_session: short TTL + wait for slot expiry; avoids fee_vault conflict with the main flow. */
@@ -206,9 +163,6 @@ describe("Real Integration Tests", () => {
 
   beforeAll(async () => {
     rpc = createSolanaRpc(VALIDATOR_RPC);
-    sendTransactionWithoutConfirming = sendTransactionWithoutConfirmingFactory({
-      rpc,
-    });
 
     sdk = new NorthStarSDK({
       solanaNetwork: "localnet",
@@ -236,8 +190,8 @@ describe("Real Integration Tests", () => {
       );
 
       await transferLamportsFromFunding(
+        sdk,
         rpc,
-        sendTransactionWithoutConfirming,
         fundingSigner,
         portalOwner.address,
         200_000_000n,
@@ -245,8 +199,8 @@ describe("Real Integration Tests", () => {
       console.log("✓ Transferred 2 SOL to portal owner");
 
       await transferLamportsFromFunding(
+        sdk,
         rpc,
-        sendTransactionWithoutConfirming,
         fundingSigner,
         delegatedAccount.address,
         100_000_000n,
@@ -254,8 +208,8 @@ describe("Real Integration Tests", () => {
       console.log("✓ Transferred 1 SOL to delegated account");
 
       await transferLamportsFromFunding(
+        sdk,
         rpc,
-        sendTransactionWithoutConfirming,
         fundingSigner,
         closeSessionOwner.address,
         200_000_000n,
@@ -277,55 +231,22 @@ describe("Real Integration Tests", () => {
 
   test("Step 1: Open Session - should create session and fee vault accounts", async () => {
     console.log("\n=== Step 1: Open Session ===");
-
-    const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
-
-    const sessionPDA = await deriveSessionPDA(portalOwner.address, gridId);
-    const feeVaultPDA = await deriveFeeVaultPDA(portalOwner.address);
-
-    console.log("Session PDA:", sessionPDA);
-    console.log("FeeVault PDA:", feeVaultPDA);
-
-    const instruction = {
-      programAddress: PORTAL_PROGRAM_ID,
-      accounts: [
-        { address: portalOwner.address, role: 1 as const },
-        { address: sessionPDA, role: 1 as const },
-        { address: feeVaultPDA, role: 1 as const },
-        {
-          address: SYSTEM_PROGRAM_ID,
-          role: 0 as const,
-        },
-      ],
-      data: PortalProgram.encodeOpenSession({
-        gridId,
-        ttlSlots: 2000n,
-        feeCap: 1_000_000n,
-      }),
-    };
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(portalOwner, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
+      portalOwner.address,
+      gridId,
     );
+    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(portalOwner.address);
 
-    const transaction =
-      await signTransactionMessageWithSigners(transactionMessage);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
-
-    try {
-      await sendAndConfirmTransactionWithoutWebsocket(transaction, {
+    const { signature } = await sdk.openSession(
+      portalOwner,
+      gridId,
+      2000,
+      1_000_000,
+      {
         commitment: "confirmed",
         skipPreflight: skipPreflight,
-      });
-    } catch (e) {
-      console.log("Transaction error (may have succeeded):", String(e));
-      throw e;
-    }
-    const signature = getSignatureFromTransaction(transaction);
+      },
+    );
 
     console.log("✓ Session opened");
     console.log("  Signature:", signature);
@@ -354,85 +275,24 @@ describe("Real Integration Tests", () => {
     "Step 2: Delegate Account - should create delegation record",
     async () => {
       console.log("\n=== Step 2: Delegate Account ===");
-
-      const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
-
-      const delegationRecordPDA = await deriveDelegationRecordPDA(
+      const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
         delegatedAccount.address,
       );
-
-      // System Program Assign: set delegated account owner to the Portal program (requires delegated keypair to sign).
-      const assignToPortalInstruction = {
-        programAddress: SYSTEM_PROGRAM_ID,
-        accounts: [
-          {
-            address: delegatedAccount.address,
-            role: AccountRole.WRITABLE_SIGNER,
-            signer: delegatedAccount,
-          },
-        ],
-        data: encodeSystemProgramAssign(PORTAL_PROGRAM_ID),
-      };
 
       console.log("Delegated account (keypair):", delegatedAccount.address);
       console.log("Delegation record PDA:", delegationRecordPDA);
 
-      const delegateInstruction = {
-        programAddress: PORTAL_PROGRAM_ID,
-        accounts: [
-          {
-            address: portalOwner.address,
-            role: AccountRole.WRITABLE_SIGNER,
-          },
-          {
-            address: delegatedAccount.address,
-            role: AccountRole.WRITABLE_SIGNER,
-            signer: delegatedAccount,
-          },
-          {
-            address: SYSTEM_PROGRAM_ID,
-            role: AccountRole.READONLY,
-          },
-          { address: delegationRecordPDA, role: AccountRole.WRITABLE },
-          { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
-        ],
-        data: PortalProgram.encodeDelegate({ gridId }),
-      };
-
-      const transactionMessage = pipe(
-        createTransactionMessage({ version: 0 }),
-        (tx) => setTransactionMessageFeePayerSigner(portalOwner, tx),
-        (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-        (tx) =>
-          appendTransactionMessageInstructions(
-            [assignToPortalInstruction, delegateInstruction],
-            tx,
-          ),
-      );
-
-      const transaction =
-        await signTransactionMessageWithSigners(transactionMessage);
-
-      assertIsSendableTransaction(transaction);
-      assertIsTransactionWithBlockhashLifetime(transaction);
-
-      const signature = getSignatureFromTransaction(transaction);
-      console.log("Signature:", signature);
-
-      try {
-        await sendAndConfirmTransactionWithoutWebsocket(transaction, {
+      const { signature } = await sdk.delegate(
+        portalOwner,
+        delegatedAccount,
+        gridId,
+        {
           commitment: "confirmed",
           skipPreflight: skipPreflight,
-        });
-      } catch (e) {
-        console.log("Transaction error (may have succeeded):", String(e));
-        throw e;
-      }
-
-
+        },
+      );
+      console.log("Signature:", signature);
       console.log("✓ Delegation created");
-
-
       // Wait a bit for the transaction to be processed
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
@@ -452,54 +312,19 @@ describe("Real Integration Tests", () => {
 
     console.log("\n=== Step 3: Deposit Fee ===");
 
-    const sessionPDA = await deriveSessionPDA(
-      portalOwner.address,
-      gridId,
-    );
-
-    const sessionPDA1 = await PortalProgram.deriveSessionPDA(
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
       portalOwner.address,
       gridId,
     );
 
     console.log("Session PDA:", sessionPDA);
-    console.log("Session PDA1:", sessionPDA1);
 
     const depositReceiptPDA = await PortalProgram.deriveDepositReceiptPDA(
       sessionPDA,
       portalOwner.address,
     );
 
-    const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
-
-    const depositInstruction = {
-      programAddress: PORTAL_PROGRAM_ID,
-      accounts: [
-        {
-          address: portalOwner.address,
-          role: AccountRole.WRITABLE_SIGNER,
-        }, // depositor
-        { address: sessionPDA, role: AccountRole.WRITABLE },
-        { address: depositReceiptPDA, role: AccountRole.WRITABLE },
-        { address: portalOwner.address, role: AccountRole.READONLY }, // recipient
-        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
-      ],
-      data: PortalProgram.encodeDepositFee({ lamports: 500_000n }),
-    };
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(portalOwner, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([depositInstruction], tx),
-    );
-
-    const transaction =
-      await signTransactionMessageWithSigners(transactionMessage);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
-
-    await sendAndConfirmTransactionWithoutWebsocket(transaction, {
+    await sdk.depositFee(portalOwner, portalOwner.address, gridId, 500_000, {
       commitment: "confirmed",
       skipPreflight: skipPreflight,
     });
@@ -522,40 +347,7 @@ describe("Real Integration Tests", () => {
       delegatedAccount.address,
     );
 
-    const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
-
-    const undelegateInstruction = {
-      programAddress: PORTAL_PROGRAM_ID,
-      accounts: [
-        {
-          address: portalOwner.address,
-          role: AccountRole.WRITABLE_SIGNER,
-        },
-        {
-          address: delegatedAccount.address,
-          role: AccountRole.WRITABLE_SIGNER,
-          signer: delegatedAccount,
-        },
-        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
-        { address: delegationRecordPDA, role: AccountRole.WRITABLE },
-        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
-      ],
-      data: PortalProgram.encodeUndelegate(),
-    };
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(portalOwner, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([undelegateInstruction], tx),
-    );
-
-    const transaction =
-      await signTransactionMessageWithSigners(transactionMessage);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
-
-    await sendAndConfirmTransactionWithoutWebsocket(transaction, {
+    await sdk.undelegate(portalOwner, delegatedAccount, {
       commitment: "confirmed",
       skipPreflight: skipPreflight,
     });
@@ -581,7 +373,7 @@ describe("Real Integration Tests", () => {
 
     const closeGridId = 1;
     const ttlSlots = 15n;
-    const sessionPDA = await deriveSessionPDA(
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
       closeSessionOwner.address,
       closeGridId,
     );
@@ -589,35 +381,16 @@ describe("Real Integration Tests", () => {
       closeSessionOwner.address,
     );
 
-    const { value: blockhashOpen } = await rpc.getLatestBlockhash().send();
-    const openIx = {
-      programAddress: PORTAL_PROGRAM_ID,
-      accounts: [
-        { address: closeSessionOwner.address, role: AccountRole.WRITABLE_SIGNER },
-        { address: sessionPDA, role: AccountRole.WRITABLE },
-        { address: feeVaultPDA, role: AccountRole.WRITABLE },
-        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
-      ],
-      data: PortalProgram.encodeOpenSession({
-        gridId: closeGridId,
-        ttlSlots,
-        feeCap: 1_000_000n,
-      }),
-    };
-
-    const openTx = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(closeSessionOwner, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(blockhashOpen, tx),
-      (tx) => appendTransactionMessageInstructions([openIx], tx),
-    );
-    const signedOpen = await signTransactionMessageWithSigners(openTx);
-    assertIsSendableTransaction(signedOpen);
-    assertIsTransactionWithBlockhashLifetime(signedOpen);
-    await sendAndConfirmTransactionWithoutWebsocket(signedOpen, {
+    await sdk.openSession(
+      closeSessionOwner,
+      closeGridId,
+      Number(ttlSlots),
+      1_000_000,
+      {
       commitment: "confirmed",
       skipPreflight: skipPreflight,
-    });
+      },
+    );
 
     await sleep(1000);
     console.log("Session PDA:", sessionPDA);
@@ -647,31 +420,7 @@ describe("Real Integration Tests", () => {
     );
     expect(slotNow > expireAfter).toBe(true);
 
-    const { value: blockhashClose } = await rpc.getLatestBlockhash().send();
-    const closeIx = {
-      programAddress: PORTAL_PROGRAM_ID,
-      accounts: [
-        {
-          address: closeSessionOwner.address,
-          role: AccountRole.WRITABLE_SIGNER,
-        },
-        { address: sessionPDA, role: AccountRole.WRITABLE },
-        { address: feeVaultPDA, role: AccountRole.WRITABLE },
-        { address: SYSTEM_PROGRAM_ID, role: AccountRole.READONLY },
-      ],
-      data: PortalProgram.encodeCloseSession({ gridId: closeGridId }),
-    };
-
-    const closeTx = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(closeSessionOwner, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(blockhashClose, tx),
-      (tx) => appendTransactionMessageInstructions([closeIx], tx),
-    );
-    const signedClose = await signTransactionMessageWithSigners(closeTx);
-    assertIsSendableTransaction(signedClose);
-    assertIsTransactionWithBlockhashLifetime(signedClose);
-    await sendAndConfirmTransactionWithoutWebsocket(signedClose, {
+    await sdk.closeSession(closeSessionOwner, closeGridId, {
       commitment: "confirmed",
       skipPreflight: skipPreflight,
     });
@@ -704,63 +453,7 @@ describe("Real Integration Tests", () => {
     // Note: This may fail if ER takes time to start
   }, 30000);
 
-  async function sendAndConfirmTransactionWithoutWebsocket(
-    transaction: any,
-    config: { commitment: "confirmed" | "finalized"; skipPreflight: boolean },
-  ) {
-    await sendTransactionWithoutConfirming(transaction, config);
-
-    const signature = getSignatureFromTransaction(transaction);
-    await pollSignatureConfirmed(rpc, signature);
-  }
 });
-
-async function deriveSessionPDA(owner: any, gridId: number): Promise<any> {
-  const addressEncoder = getAddressEncoder();
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: PORTAL_PROGRAM_ID,
-    seeds: ["session", addressEncoder.encode(owner), numberToLE(gridId, 8)],
-  });
-  return pda;
-}
-
-async function deriveFeeVaultPDA(owner: any): Promise<any> {
-  const addressEncoder = getAddressEncoder();
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: PORTAL_PROGRAM_ID,
-    seeds: ["fee_vault", addressEncoder.encode(owner)],
-  });
-  return pda;
-}
-
-function numberToLE(num: number, bytes: number): Uint8Array {
-  const arr = new Uint8Array(bytes);
-  for (let i = 0; i < bytes; i++) {
-    arr[i] = num & 0xff;
-    num = num >> 8;
-  }
-  return arr;
-}
-
-/**
- * System Program Assign instruction payload: bincode u32 LE variant = 1, then 32-byte new owner pubkey.
- */
-function encodeSystemProgramAssign(newProgramOwner: ReturnType<typeof address>): Uint8Array {
-  const addressEncoder = getAddressEncoder();
-  const data = new Uint8Array(4 + 32);
-  new DataView(data.buffer).setUint32(0, 1, true);
-  data.set(addressEncoder.encode(newProgramOwner), 4);
-  return data;
-}
-
-async function deriveDelegationRecordPDA(delegatedAccount: any): Promise<any> {
-  const addressEncoder = getAddressEncoder();
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: PORTAL_PROGRAM_ID,
-    seeds: ["delegation", addressEncoder.encode(delegatedAccount)],
-  });
-  return pda;
-}
 
 function safeStringify(obj: any): string {
   try {

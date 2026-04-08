@@ -3,7 +3,7 @@
  * Constructs Solana transactions for Portal operations
  */
 
-import { Address } from "@solana/addresses";
+import { Address, address } from "@solana/addresses";
 import { Rpc, SolanaRpcApi } from "@solana/rpc";
 import {
   PortalProgram,
@@ -18,6 +18,9 @@ import { ReadTransactionParams } from "../types";
 export class TransactionBuilder {
   private rpc: Rpc<SolanaRpcApi>;
   private portalProgramId: Address;
+  private readonly systemProgramId: Address = address(
+    "11111111111111111111111111111111",
+  );
 
   constructor(
     rpc: Rpc<SolanaRpcApi>,
@@ -104,6 +107,7 @@ export class TransactionBuilder {
             { address: owner, role: 1 },
             { address: sessionPDA, role: 1 },
             { address: feeVaultPDA, role: 1 },
+            { address: this.systemProgramId, role: 0 },
           ],
           data: PortalProgram.encodeOpenSession(openSessionParams),
         },
@@ -146,6 +150,7 @@ export class TransactionBuilder {
             { address: owner, role: 1 },
             { address: sessionPDA, role: 1 },
             { address: feeVaultPDA, role: 1 },
+            { address: this.systemProgramId, role: 0 },
           ],
           data: PortalProgram.encodeCloseSession(closeSessionParams),
         },
@@ -164,13 +169,20 @@ export class TransactionBuilder {
   async buildDepositFeeTx(
     depositor: Address,
     sessionOwner: Address,
+    gridId: number,
     lamports: bigint,
   ): Promise<any> {
     const { value: latestBlockhash } = await this.rpc
       .getLatestBlockhash()
       .send();
 
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
+      sessionOwner,
+      gridId,
+      this.portalProgramId,
+    );
+    const depositReceiptPDA = await PortalProgram.deriveDepositReceiptPDA(
+      sessionPDA,
       sessionOwner,
       this.portalProgramId,
     );
@@ -186,7 +198,10 @@ export class TransactionBuilder {
           programAddress: this.portalProgramId,
           accounts: [
             { address: depositor, role: 1 },
-            { address: feeVaultPDA, role: 1 },
+            { address: sessionPDA, role: 1 },
+            { address: depositReceiptPDA, role: 1 },
+            { address: sessionOwner, role: 0 },
+            { address: this.systemProgramId, role: 0 },
           ],
           data: PortalProgram.encodeDepositFee(depositFeeParams),
         },
@@ -228,7 +243,9 @@ export class TransactionBuilder {
           accounts: [
             { address: owner, role: 1 },
             { address: delegatedAccount, role: 1 },
+            { address: this.systemProgramId, role: 0 },
             { address: delegationRecordPDA, role: 1 },
+            { address: this.systemProgramId, role: 0 },
           ],
           data: PortalProgram.encodeDelegate(delegateParams),
         },
@@ -266,7 +283,9 @@ export class TransactionBuilder {
           accounts: [
             { address: owner, role: 1 },
             { address: delegatedAccount, role: 1 },
+            { address: this.systemProgramId, role: 0 },
             { address: delegationRecordPDA, role: 1 },
+            { address: this.systemProgramId, role: 0 },
           ],
           data: PortalProgram.encodeUndelegate(),
         },

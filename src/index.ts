@@ -1,6 +1,5 @@
 import {
   createSolanaRpc,
-  createSolanaRpcSubscriptions,
   createTransactionMessage,
   pipe,
   setTransactionMessageFeePayerSigner,
@@ -9,18 +8,20 @@ import {
   signTransactionMessageWithSigners,
   assertIsTransactionWithBlockhashLifetime,
   assertIsSendableTransaction,
-  sendAndConfirmTransactionFactory,
   generateKeyPairSigner,
+  createKeyPairSignerFromBytes,
   createKeyPairSignerFromPrivateKeyBytes,
   getSignatureFromTransaction,
+  getAddressEncoder,
+  address,
+  sendTransactionWithoutConfirmingFactory,
+  AccountRole,
   Address,
   Rpc,
   SolanaRpcApi,
-  RpcSubscriptions,
-  SolanaRpcSubscriptionsApi,
   TransactionSigner,
 } from "@solana/kit";
-import { NETWORKS } from "./config/networks";
+import bs58 from "bs58";
 import { AccountInfo, NorthStarConfig } from "./types";
 import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
 import { AccountResolver } from "./readers/AccountResolver";
@@ -35,7 +36,12 @@ export interface TransactionResult {
 
 export interface TransactionOptions {
   commitment?: "processed" | "confirmed" | "finalized";
+  skipPreflight?: boolean;
+  maxAttempts?: number;
+  intervalMs?: number;
 }
+
+const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
 
 /**
  * Main North Star SDK class
@@ -43,13 +49,12 @@ export interface TransactionOptions {
  */
 export class NorthStarSDK {
   private rpc: Rpc<SolanaRpcApi>;
-  private rpcSubscriptions: RpcSubscriptions<SolanaRpcSubscriptionsApi>;
   private ephemeralRollupReader: EphemeralRollupReader;
   private accountResolver: AccountResolver;
   private config: NorthStarConfig;
   private portalProgramId: Address;
-  private sendAndConfirmTransaction: ReturnType<
-    typeof sendAndConfirmTransactionFactory
+  private sendTransactionWithoutConfirming: ReturnType<
+    typeof sendTransactionWithoutConfirmingFactory
   >;
 
   /**
@@ -58,20 +63,14 @@ export class NorthStarSDK {
    */
   constructor(config: NorthStarConfig) {
     this.config = config;
-    this.portalProgramId = config.portalProgramId || PortalProgram.PROGRAM_ID;
+    this.portalProgramId = config.portalProgramId;
 
     const solanaRpc =
-      config.customEndpoints?.solana || NETWORKS.solana[config.solanaNetwork];
+      config.customEndpoints.solana;
     this.rpc = createSolanaRpc(solanaRpc);
 
-    const wsUrl = solanaRpc
-      .replace("https://", "wss://")
-      .replace("http://", "ws://");
-    this.rpcSubscriptions = createSolanaRpcSubscriptions(wsUrl);
-
     const ephemeralRollupRpc =
-      config.customEndpoints?.ephemeralRollup ||
-      NETWORKS.ephemeralRollup[config.solanaNetwork];
+      config.customEndpoints.ephemeralRollup;
     this.ephemeralRollupReader = new EphemeralRollupReader(ephemeralRollupRpc);
 
     this.accountResolver = new AccountResolver(
@@ -79,10 +78,11 @@ export class NorthStarSDK {
       this.rpc,
     );
 
-    this.sendAndConfirmTransaction = sendAndConfirmTransactionFactory({
+    this.sendTransactionWithoutConfirming = sendTransactionWithoutConfirmingFactory(
+      {
       rpc: this.rpc,
-      rpcSubscriptions: this.rpcSubscriptions,
-    });
+      },
+    );
 
     console.log("✓ North Star SDK initialized");
     console.log(`  Solana Network: ${solanaRpc}`);
@@ -104,32 +104,31 @@ export class NorthStarSDK {
   async createKeyPairFromBase58(
     privateKeyBase58: string,
   ): Promise<TransactionSigner> {
-    const privateKeyBytes = Uint8Array.from(
-      // Simple base58 decode for standard Solana private keys
-      privateKeyBase58
-        .split("")
-        .map((c) =>
-          "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".indexOf(
-            c,
-          ),
-        ),
+    const bytes = Uint8Array.from(bs58.decode(privateKeyBase58.trim()));
+    if (bytes.length === 64) {
+      return await createKeyPairSignerFromBytes(bytes);
+    }
+    if (bytes.length === 32) {
+      return await createKeyPairSignerFromPrivateKeyBytes(bytes);
+    }
+    throw new Error(
+      `Private key decodes to ${bytes.length} bytes; expected 32 or 64.`,
     );
-    return await createKeyPairSignerFromPrivateKeyBytes(privateKeyBytes);
   }
 
   /**
    * Get account information using 2-tier fallback strategy
    * Priority: Ephemeral Rollup → Solana L1
    */
-  async getAccountInfo(address: Address): Promise<AccountInfo> {
-    return await this.accountResolver.resolve(address);
+  async getAccountInfo(address: Address, search_source: 'ephemeral' | 'solana'): Promise<AccountInfo> {
+    return await this.accountResolver.resolve(address, search_source);
   }
 
   /**
    * Get multiple accounts in batch
    */
-  async getMultipleAccounts(addresses: Address[]): Promise<AccountInfo[]> {
-    return await this.accountResolver.resolveMultiple(addresses);
+  async getMultipleAccounts(addresses: Address[], search_source: 'ephemeral' | 'solana'): Promise<AccountInfo[]> {
+    return await this.accountResolver.resolveMultiple(addresses, search_source);
   }
 
   /**
@@ -137,6 +136,72 @@ export class NorthStarSDK {
    */
   getRpc(): Rpc<SolanaRpcApi> {
     return this.rpc;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private encodeSystemProgramAssign(newProgramOwner: Address): Uint8Array {
+    const addressEncoder = getAddressEncoder();
+    const data = new Uint8Array(4 + 32);
+    new DataView(data.buffer).setUint32(0, 1, true);
+    data.set(addressEncoder.encode(newProgramOwner), 4);
+    return data;
+  }
+
+  async confirmSignature(
+    signature: string,
+    options: TransactionOptions = {},
+  ): Promise<void> {
+    const commitment = options.commitment || "confirmed";
+    const maxAttempts = options.maxAttempts ?? 20;
+    const intervalMs = options.intervalMs ?? 1000;
+
+    for (let i = 0; i < maxAttempts; i++) {
+      const statuses = await (this.rpc as any)
+        .getSignatureStatuses([signature])
+        .send();
+      const status = statuses?.value?.[0];
+
+      if (status?.err) {
+        throw new Error(
+          `Transaction failed on-chain: status.err ${JSON.stringify(status.err)}`,
+        );
+      }
+
+      if (
+        status &&
+        (status.confirmationStatus === commitment ||
+          status.confirmationStatus === "finalized" ||
+          (commitment === "processed" &&
+            (status.confirmationStatus === "confirmed" ||
+              status.confirmationStatus === "finalized")))
+      ) {
+        return;
+      }
+
+      await this.sleep(intervalMs);
+    }
+
+    throw new Error(
+      `Transaction confirmation timeout (HTTP polling): ${String(signature)}`,
+    );
+  }
+
+  async sendAndConfirmTransactionWithoutWebsocket(
+    transaction: any,
+    options: TransactionOptions = {},
+  ): Promise<{ signature: string }> {
+    const commitment = options.commitment || "confirmed";
+    const skipPreflight = options.skipPreflight ?? true;
+    await this.sendTransactionWithoutConfirming(transaction, {
+      commitment,
+      skipPreflight,
+    });
+    const signature = getSignatureFromTransaction(transaction);
+    await this.confirmSignature(signature, options);
+    return { signature };
   }
 
   /**
@@ -170,6 +235,7 @@ export class NorthStarSDK {
         { address: signer.address, role: 1 as const },
         { address: sessionPDA, role: 1 as const },
         { address: feeVaultPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeOpenSession({
         gridId,
@@ -221,7 +287,9 @@ export class NorthStarSDK {
       accounts: [
         { address: signer.address, role: 1 as const },
         { address: delegatedAccount, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
         { address: delegationRecordPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeDelegate({ gridId }),
     };
@@ -251,6 +319,7 @@ export class NorthStarSDK {
   async buildDepositFee(
     signer: TransactionSigner,
     sessionOwner: Address,
+    gridId: number,
     lamports: number,
   ): Promise<{
     instructions: any[];
@@ -258,7 +327,13 @@ export class NorthStarSDK {
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
+      sessionOwner,
+      gridId,
+      this.portalProgramId,
+    );
+    const depositReceiptPDA = await PortalProgram.deriveDepositReceiptPDA(
+      sessionPDA,
       sessionOwner,
       this.portalProgramId,
     );
@@ -268,7 +343,10 @@ export class NorthStarSDK {
       programAddress: this.portalProgramId,
       accounts: [
         { address: signer.address, role: 1 as const },
-        { address: feeVaultPDA, role: 1 as const },
+        { address: sessionPDA, role: 1 as const },
+        { address: depositReceiptPDA, role: 1 as const },
+        { address: sessionOwner, role: 0 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeDepositFee({ lamports: BigInt(lamports) }),
     };
@@ -315,7 +393,9 @@ export class NorthStarSDK {
       accounts: [
         { address: signer.address, role: 1 as const },
         { address: delegatedAccount, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
         { address: delegationRecordPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeUndelegate(),
     };
@@ -368,6 +448,7 @@ export class NorthStarSDK {
         { address: signer.address, role: 1 as const },
         { address: sessionPDA, role: 1 as const },
         { address: feeVaultPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeCloseSession({ gridId }),
     };
@@ -400,6 +481,7 @@ export class NorthStarSDK {
     gridId: number,
     ttlSlots: number = 2000,
     feeCap: number = 1_000_000,
+    options: TransactionOptions = {},
   ): Promise<TransactionResult> {
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       signer.address,
@@ -418,6 +500,7 @@ export class NorthStarSDK {
         { address: signer.address, role: 1 as const },
         { address: sessionPDA, role: 1 as const },
         { address: feeVaultPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeOpenSession({
         gridId,
@@ -442,10 +525,10 @@ export class NorthStarSDK {
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, {
-      commitment: "confirmed",
-    });
-    const signature = getSignatureFromTransaction(transaction);
+    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
+      transaction,
+      options,
+    );
 
     console.log(`✓ Session opened: ${sessionPDA}`);
     console.log(`  Signature: ${signature}`);
@@ -458,21 +541,42 @@ export class NorthStarSDK {
    */
   async delegate(
     signer: TransactionSigner,
-    delegatedAccount: Address,
+    delegatedAccountSigner: TransactionSigner,
     gridId: number,
+    options: TransactionOptions = {},
   ): Promise<TransactionResult> {
+    const delegatedAccount = delegatedAccountSigner.address;
     const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
       this.portalProgramId,
     );
 
-    const instruction = {
+    const assignToPortalInstruction = {
+      version: 0,
+      programAddress: SYSTEM_PROGRAM_ID,
+      accounts: [
+        {
+          address: delegatedAccount,
+          role: AccountRole.WRITABLE_SIGNER,
+          signer: delegatedAccountSigner,
+        },
+      ],
+      data: this.encodeSystemProgramAssign(this.portalProgramId),
+    };
+
+    const delegateInstruction = {
       version: 0,
       programAddress: this.portalProgramId,
       accounts: [
         { address: signer.address, role: 1 as const },
-        { address: delegatedAccount, role: 1 as const },
+        {
+          address: delegatedAccount,
+          role: AccountRole.WRITABLE_SIGNER,
+          signer: delegatedAccountSigner,
+        },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
         { address: delegationRecordPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeDelegate({ gridId }),
     };
@@ -485,7 +589,11 @@ export class NorthStarSDK {
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+      (tx) =>
+        appendTransactionMessageInstructions(
+          [assignToPortalInstruction, delegateInstruction],
+          tx,
+        ),
     );
 
     const transaction =
@@ -493,10 +601,10 @@ export class NorthStarSDK {
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, {
-      commitment: "confirmed",
-    });
-    const signature = getSignatureFromTransaction(transaction);
+    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
+      transaction,
+      options,
+    );
 
     console.log(`✓ Account delegated: ${delegatedAccount}`);
     console.log(`  Signature: ${signature}`);
@@ -510,9 +618,17 @@ export class NorthStarSDK {
   async depositFee(
     signer: TransactionSigner,
     sessionOwner: Address,
+    gridId: number,
     lamports: number,
+    options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
+    const sessionPDA = await PortalProgram.deriveSessionPDA(
+      sessionOwner,
+      gridId,
+      this.portalProgramId,
+    );
+    const depositReceiptPDA = await PortalProgram.deriveDepositReceiptPDA(
+      sessionPDA,
       sessionOwner,
       this.portalProgramId,
     );
@@ -522,7 +638,10 @@ export class NorthStarSDK {
       programAddress: this.portalProgramId,
       accounts: [
         { address: signer.address, role: 1 as const },
-        { address: feeVaultPDA, role: 1 as const },
+        { address: sessionPDA, role: 1 as const },
+        { address: depositReceiptPDA, role: 1 as const },
+        { address: sessionOwner, role: 0 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeDepositFee({ lamports: BigInt(lamports) }),
     };
@@ -543,10 +662,10 @@ export class NorthStarSDK {
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, {
-      commitment: "confirmed",
-    });
-    const signature = getSignatureFromTransaction(transaction);
+    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
+      transaction,
+      options,
+    );
 
     console.log(`✓ Fee deposited: ${lamports} lamports to ${sessionOwner}`);
     console.log(`  Signature: ${signature}`);
@@ -559,8 +678,10 @@ export class NorthStarSDK {
    */
   async undelegate(
     signer: TransactionSigner,
-    delegatedAccount: Address,
+    delegatedAccountSigner: TransactionSigner,
+    options: TransactionOptions = {},
   ): Promise<TransactionResult> {
+    const delegatedAccount = delegatedAccountSigner.address;
     const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
       this.portalProgramId,
@@ -571,8 +692,14 @@ export class NorthStarSDK {
       programAddress: this.portalProgramId,
       accounts: [
         { address: signer.address, role: 1 as const },
-        { address: delegatedAccount, role: 1 as const },
+        {
+          address: delegatedAccount,
+          role: AccountRole.WRITABLE_SIGNER,
+          signer: delegatedAccountSigner,
+        },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
         { address: delegationRecordPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeUndelegate(),
     };
@@ -593,10 +720,10 @@ export class NorthStarSDK {
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, {
-      commitment: "confirmed",
-    });
-    const signature = getSignatureFromTransaction(transaction);
+    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
+      transaction,
+      options,
+    );
 
     console.log(`✓ Account undelegated: ${delegatedAccount}`);
     console.log(`  Signature: ${signature}`);
@@ -610,6 +737,7 @@ export class NorthStarSDK {
   async closeSession(
     signer: TransactionSigner,
     gridId: number,
+    options: TransactionOptions = {},
   ): Promise<TransactionResult> {
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       signer.address,
@@ -628,6 +756,7 @@ export class NorthStarSDK {
         { address: signer.address, role: 1 as const },
         { address: sessionPDA, role: 1 as const },
         { address: feeVaultPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
       data: PortalProgram.encodeCloseSession({ gridId }),
     };
@@ -648,10 +777,10 @@ export class NorthStarSDK {
     assertIsSendableTransaction(transaction);
     assertIsTransactionWithBlockhashLifetime(transaction);
 
-    await this.sendAndConfirmTransaction(transaction, {
-      commitment: "confirmed",
-    });
-    const signature = getSignatureFromTransaction(transaction);
+    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
+      transaction,
+      options,
+    );
 
     console.log(`✓ Session closed: ${sessionPDA}`);
     console.log(`  Signature: ${signature}`);
@@ -687,5 +816,5 @@ export class NorthStarSDK {
 
 // Re-export types and Kit utilities for convenience
 export * from "./types";
-export { PORTAL_PROGRAM_ID, PortalProgram } from "./programs/portal";
+export { PortalProgram } from "./programs/portal";
 export { createSolanaRpc } from "@solana/kit";
