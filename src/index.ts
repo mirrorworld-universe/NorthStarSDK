@@ -20,6 +20,7 @@ import {
   Rpc,
   SolanaRpcApi,
   TransactionSigner,
+  partiallySignTransactionMessageWithSigners,
 } from "@solana/kit";
 import bs58 from "bs58";
 import { AccountInfo, NorthStarConfig } from "./types";
@@ -40,6 +41,14 @@ export interface TransactionOptions {
   maxAttempts?: number;
   intervalMs?: number;
 }
+
+export interface DelegateV1Signers {
+  delegatedAccountSigner: TransactionSigner;
+  feePayerSigner?: TransactionSigner;
+}
+
+/** 钱包对「已本地部分签名」的交易做最终签名；不传 signers。无 feePayerSigner 时，该签名同时承担用户/fee payer 角色。 */
+export type DelegateV1WalletSignTransaction = (transaction: any) => Promise<any>;
 
 const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
 
@@ -79,6 +88,7 @@ export class NorthStarSDK {
     const solanaRpc =
       config.customEndpoints.solana;
     this.rpc = createSolanaRpc(solanaRpc);
+
 
     const ephemeralRollupRpc =
       config.customEndpoints.ephemeralRollup;
@@ -578,6 +588,86 @@ export class NorthStarSDK {
 
     return { signature };
   }
+
+
+  async delegate_v1(
+    user: Address,
+    gridId: number,
+    ownerProgramId: Address,
+    signTransaction: DelegateV1WalletSignTransaction,
+    signers: DelegateV1Signers,
+    options: TransactionOptions = {},
+  ): Promise<TransactionResult> {
+    const delegatedAccount = signers.delegatedAccountSigner.address;
+    const delegationRecordPDA =
+      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+
+    const delegateInstruction = {
+      version: 0,
+      programAddress: this.portalProgramId,
+      accounts: [
+        { address: user, role: 1 as const },
+        {
+          address: delegatedAccount,
+          role: AccountRole.WRITABLE_SIGNER,
+          signer: signers.delegatedAccountSigner,
+        },
+        { address: ownerProgramId, role: 0 as const },
+        { address: delegationRecordPDA, role: 1 as const },
+        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+      ],
+      data: this.portal.encodeDelegate({ gridId }),
+    };
+
+    const { value: latestBlockhash } = await this.rpc
+      .getLatestBlockhash()
+      .send();
+
+    const transactionMessageWithoutFeePayer = pipe(
+      createTransactionMessage({ version: 0 }),
+      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
+      (tx) => appendTransactionMessageInstructions([delegateInstruction], tx),
+    );
+
+    // 1) 设置 fee payer 公钥：有本地 fee payer 密钥则用 signer，否则仅 pubkey（由后续钱包 signTransaction 补签）
+    let transactionMessageWithFeePayer: any;
+    if (signers.feePayerSigner) {
+      if (signers.feePayerSigner.address !== user) {
+        throw new Error("signers.feePayerSigner address must match user");
+      }
+      transactionMessageWithFeePayer = setTransactionMessageFeePayerSigner(
+        signers.feePayerSigner,
+        transactionMessageWithoutFeePayer,
+      );
+    } else {
+      transactionMessageWithFeePayer = {
+        ...transactionMessageWithoutFeePayer,
+        feePayer: user,
+      };
+    }
+
+    // 2) 用 signers 里嵌入的私钥做部分签名（含 delegated；若有 feePayerSigner 则一并签）
+    const transactionPartiallySigned =
+      await partiallySignTransactionMessageWithSigners(
+        transactionMessageWithFeePayer,
+      );
+
+    // 3) 钱包始终再签一次；无 feePayerSigner 时，该步同时是用户/fee payer 签名
+    const transaction = await signTransaction(transactionPartiallySigned);
+    assertIsSendableTransaction(transaction);
+    assertIsTransactionWithBlockhashLifetime(transaction);
+
+    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
+      transaction,
+      options,
+    );
+
+    console.log(`✓ Account delegated: ${delegatedAccount}`);
+    console.log(`  Signature: ${signature}`);
+
+    return { signature };
+  }
+
 
   /**
    * Deposit fees into a session's fee vault
