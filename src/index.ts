@@ -43,6 +43,14 @@ export interface TransactionOptions {
 
 const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
 
+export function encodeSystemProgramAssignData(newProgramOwner: Address): Uint8Array {
+  const addressEncoder = getAddressEncoder();
+  const data = new Uint8Array(4 + 32);
+  new DataView(data.buffer).setUint32(0, 1, true);
+  data.set(addressEncoder.encode(newProgramOwner), 4);
+  return data;
+}
+
 /**
  * Main North Star SDK class
  * Provides unified interface for Ephemeral Rollup interactions
@@ -155,14 +163,6 @@ export class NorthStarSDK {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  private encodeSystemProgramAssign(newProgramOwner: Address): Uint8Array {
-    const addressEncoder = getAddressEncoder();
-    const data = new Uint8Array(4 + 32);
-    new DataView(data.buffer).setUint32(0, 1, true);
-    data.set(addressEncoder.encode(newProgramOwner), 4);
-    return data;
   }
 
   async confirmSignature(
@@ -528,24 +528,12 @@ export class NorthStarSDK {
     signer: TransactionSigner,
     delegatedAccountSigner: TransactionSigner,
     gridId: number,
+    ownerProgramId: Address,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
     const delegatedAccount = delegatedAccountSigner.address;
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-
-    const assignToPortalInstruction = {
-      version: 0,
-      programAddress: SYSTEM_PROGRAM_ID,
-      accounts: [
-        {
-          address: delegatedAccount,
-          role: AccountRole.WRITABLE_SIGNER,
-          signer: delegatedAccountSigner,
-        },
-      ],
-      data: this.encodeSystemProgramAssign(this.portalProgramId),
-    };
 
     const delegateInstruction = {
       version: 0,
@@ -557,7 +545,7 @@ export class NorthStarSDK {
           role: AccountRole.WRITABLE_SIGNER,
           signer: delegatedAccountSigner,
         },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+        { address: ownerProgramId, role: 0 as const },
         { address: delegationRecordPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
@@ -572,11 +560,7 @@ export class NorthStarSDK {
       createTransactionMessage({ version: 0 }),
       (tx) => setTransactionMessageFeePayerSigner(signer, tx),
       (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) =>
-        appendTransactionMessageInstructions(
-          [assignToPortalInstruction, delegateInstruction],
-          tx,
-        ),
+      (tx) => appendTransactionMessageInstructions([delegateInstruction], tx),
     );
 
     const transaction =

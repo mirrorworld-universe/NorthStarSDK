@@ -30,7 +30,7 @@ import {
   KeyPairSigner,
 } from "@solana/kit";
 import bs58 from "bs58";
-import { NorthStarSDK } from "../src";
+import { NorthStarSDK, encodeSystemProgramAssignData } from "../src";
 import { config } from "dotenv";
 config();
 
@@ -71,13 +71,10 @@ const EPHEMERAL_ROLLUP_RPC = "https://ephemeral.devnet.sonic.game";
 const VALIDATOR_RPC = "https://api.devnet.sonic.game";
 
 /** Default funding wallet (devnet); override with TRANSFER_SOURCE_ADDRESS */
-const DEFAULT_TRANSFER_SOURCE_ADDRESS =
-  "A8WbfsEkdnFwsxvtDBXuirUnXjriAwQWkc6trVWsTgK5";
+// const DEFAULT_TRANSFER_SOURCE_ADDRESS =
+//   "A8WbfsEkdnFwsxvtDBXuirUnXjriAwQWkc6trVWsTgK5";
 
-function getTransferSourceAddress(): Address {
-  const raw = process.env.TRANSFER_SOURCE_ADDRESS?.trim();
-  return address(raw || DEFAULT_TRANSFER_SOURCE_ADDRESS);
-}
+
 
 function getPortalProgramId(): Address {
   const raw = process.env.PORTAL_PROGRAM_ID!.trim();
@@ -104,12 +101,14 @@ async function loadFundingSignerFromEnv(): Promise<KeyPairSigner> {
       `TRANSFER_SOURCE_PRIVATE_KEY decodes to ${bytes.length} bytes; expected 32 or 64.`,
     );
   }
-  const expected = getTransferSourceAddress();
-  if (signer.address !== expected) {
-    throw new Error(
-      `Funding keypair address ${String(signer.address)} does not match TRANSFER_SOURCE_ADDRESS ${String(expected)}`,
-    );
-  }
+  // const expected = getTransferSourceAddress();
+  // if (signer.address !== expected) {
+  //   throw new Error(
+  //     `Funding keypair address ${String(signer.address)} does not match TRANSFER_SOURCE_ADDRESS ${String(expected)}`,
+  //   );
+  // }
+
+  console.log("Funding signer:", signer.address);
   return signer;
 }
 
@@ -157,6 +156,46 @@ async function transferLamportsFromFunding(
   });
 }
 
+async function assignAccountOwnerAndConfirm(
+  sdk: NorthStarSDK,
+  rpc: SolanaRpc,
+  feePayerSigner: KeyPairSigner,
+  accountSigner: KeyPairSigner,
+  currentOwnerProgramId: Address,
+  newOwnerProgramId: Address,
+): Promise<void> {
+  const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
+  const instruction = {
+    version: 0,
+    programAddress: currentOwnerProgramId,
+    accounts: [
+      {
+        address: accountSigner.address,
+        role: AccountRole.WRITABLE_SIGNER,
+        signer: accountSigner,
+      },
+    ],
+    data: encodeSystemProgramAssignData(newOwnerProgramId),
+  };
+
+  const transactionMessage = pipe(
+    createTransactionMessage({ version: 0 }),
+    (tx) => setTransactionMessageFeePayerSigner(feePayerSigner, tx),
+    (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
+    (tx) => appendTransactionMessageInstructions([instruction], tx),
+  );
+
+  const transaction =
+    await signTransactionMessageWithSigners(transactionMessage);
+  assertIsSendableTransaction(transaction);
+  assertIsTransactionWithBlockhashLifetime(transaction);
+
+  await sdk.sendAndConfirmTransactionWithoutWebsocket(transaction, {
+    commitment: "confirmed",
+    skipPreflight: skipPreflight,
+  });
+}
+
 describe("Real Integration Tests", () => {
 
   let sdk: NorthStarSDK;
@@ -190,7 +229,7 @@ describe("Real Integration Tests", () => {
       const fundingSigner = await loadFundingSignerFromEnv();
       console.log(
         "Funding transfers from",
-        getTransferSourceAddress(),
+        fundingSigner.address,
         "(override with TRANSFER_SOURCE_ADDRESS)",
       );
 
@@ -283,10 +322,21 @@ describe("Real Integration Tests", () => {
       console.log("Delegated account (keypair):", delegatedAccount.address);
       console.log("Delegation record PDA:", delegationRecordPDA);
 
+      await assignAccountOwnerAndConfirm(
+        sdk,
+        rpc,
+        portalOwner,
+        delegatedAccount,
+        SYSTEM_PROGRAM_ID,
+        PORTAL_PROGRAM_ID,
+      );
+      console.log("✓ Assign executed and confirmed");
+
       const { signature } = await sdk.delegate(
         portalOwner,
         delegatedAccount,
         gridId,
+        SYSTEM_PROGRAM_ID,
         {
           commitment: "confirmed",
           skipPreflight: skipPreflight,
