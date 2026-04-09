@@ -4,7 +4,6 @@
  */
 
 import { Address, getProgramDerivedAddress } from "@solana/addresses";
-import { PORTAL_PROGRAM_ID } from "../programs/portal";
 import { toU64LE } from "./common";
 
 /**
@@ -14,7 +13,7 @@ import { toU64LE } from "./common";
 export async function deriveSessionPDA(
   owner: Address,
   gridId: number,
-  portalProgramId: Address = PORTAL_PROGRAM_ID,
+  portalProgramId: Address,
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,
@@ -29,7 +28,7 @@ export async function deriveSessionPDA(
  */
 export async function deriveFeeVaultPDA(
   owner: Address,
-  portalProgramId: Address = PORTAL_PROGRAM_ID,
+  portalProgramId: Address,
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,
@@ -44,7 +43,7 @@ export async function deriveFeeVaultPDA(
  */
 export async function deriveDelegationRecordPDA(
   delegatedAccount: Address,
-  portalProgramId: Address = PORTAL_PROGRAM_ID,
+  portalProgramId: Address,
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,
@@ -60,7 +59,7 @@ export async function deriveDelegationRecordPDA(
 export async function deriveDepositReceiptPDA(
   session: Address,
   recipient: Address,
-  portalProgramId: Address = PORTAL_PROGRAM_ID,
+  portalProgramId: Address,
 ): Promise<Address> {
   const [pda] = await getProgramDerivedAddress({
     programAddress: portalProgramId,

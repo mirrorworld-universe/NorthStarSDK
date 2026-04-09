@@ -7,23 +7,10 @@
 import { deserialize, field, serialize, variant } from "@dao-xyz/borsh";
 import {
   Address,
-  address,
   getAddressEncoder,
   getProgramDerivedAddress,
 } from "@solana/addresses";
 import { toU64LE, readU64LE, readU128LE } from "../utils/common";
-
-/**
- * Portal Program ID — Base58 from `process.env.PORTAL_PROGRAM_ID` (via `.env` or shell).
- */
-export const PORTAL_PROGRAM_ID: Address = address("B519Ej1JFgxWknbUyfSCQ2QX8xTaWP8CAUKFLw2GtgBD");
-
-/**
- * Get the Portal Program ID
- */
-export function getPortalProgramId(): Address {
-  return PORTAL_PROGRAM_ID;
-}
 
 /**
  * Portal instruction parameters
@@ -189,11 +176,76 @@ function assertAccountDataLength(
 
 
 export class PortalProgram {
-  /**
-   * Portal Program ID
-   */
-  static get PROGRAM_ID(): Address {
-    return PORTAL_PROGRAM_ID;
+  private readonly defaultProgramId: Address;
+
+  constructor(defaultProgramId: Address) {
+    this.defaultProgramId = defaultProgramId;
+  }
+
+  getProgramId(): Address {
+    return this.defaultProgramId;
+  }
+
+  async deriveSessionPDA(owner: Address, gridId: number): Promise<Address> {
+    return PortalProgram.deriveSessionPDA(owner, gridId, this.defaultProgramId);
+  }
+
+  async deriveFeeVaultPDA(owner: Address): Promise<Address> {
+    return PortalProgram.deriveFeeVaultPDA(owner, this.defaultProgramId);
+  }
+
+  async deriveDelegationRecordPDA(delegatedAccount: Address): Promise<Address> {
+    return PortalProgram.deriveDelegationRecordPDA(
+      delegatedAccount,
+      this.defaultProgramId,
+    );
+  }
+
+  async deriveDepositReceiptPDA(
+    session: Address,
+    recipient: Address,
+  ): Promise<Address> {
+    return PortalProgram.deriveDepositReceiptPDA(
+      session,
+      recipient,
+      this.defaultProgramId,
+    );
+  }
+
+  encodeOpenSession(params: OpenSessionParams): Uint8Array {
+    return PortalProgram.encodeOpenSession(params);
+  }
+
+  encodeCloseSession(params: CloseSessionParams): Uint8Array {
+    return PortalProgram.encodeCloseSession(params);
+  }
+
+  encodeDepositFee(params: DepositFeeParams): Uint8Array {
+    return PortalProgram.encodeDepositFee(params);
+  }
+
+  encodeDelegate(params: DelegateParams): Uint8Array {
+    return PortalProgram.encodeDelegate(params);
+  }
+
+  encodeUndelegate(): Uint8Array {
+    return PortalProgram.encodeUndelegate();
+  }
+
+  parseSession(data: Uint8Array): Session {
+    return PortalProgram.parseSession(data);
+  }
+
+  parseFeeVault(data: Uint8Array): FeeVault {
+    return PortalProgram.parseFeeVault(data);
+  }
+
+  parseDelegationRecord(data: Uint8Array): DelegationRecord {
+    return PortalProgram.parseDelegationRecord(data);
+  }
+
+  parseDepositReceipt(data: Uint8Array): DepositReceipt {
+    return PortalProgram.parseDepositReceipt(data);
   }
 
   /**
@@ -203,7 +255,7 @@ export class PortalProgram {
   static async deriveSessionPDA(
     owner: Address,
     gridId: number,
-    programId: Address = PORTAL_PROGRAM_ID,
+    programId: Address,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
@@ -219,7 +271,7 @@ export class PortalProgram {
    */
   static async deriveFeeVaultPDA(
     owner: Address,
-    programId: Address = PORTAL_PROGRAM_ID,
+    programId: Address,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
@@ -235,7 +287,7 @@ export class PortalProgram {
    */
   static async deriveDelegationRecordPDA(
     delegatedAccount: Address,
-    programId: Address = PORTAL_PROGRAM_ID,
+    programId: Address ,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({
@@ -252,7 +304,7 @@ export class PortalProgram {
   static async deriveDepositReceiptPDA(
     session: Address,
     recipient: Address,
-    programId: Address = PORTAL_PROGRAM_ID,
+    programId: Address ,
   ): Promise<Address> {
     const addressEncoder = getAddressEncoder();
     const [pda] = await getProgramDerivedAddress({

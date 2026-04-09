@@ -7,7 +7,6 @@ import { Address, address } from "@solana/addresses";
 import { Rpc, SolanaRpcApi } from "@solana/rpc";
 import {
   PortalProgram,
-  PORTAL_PROGRAM_ID,
   OpenSessionParams,
   CloseSessionParams,
   DepositFeeParams,
@@ -24,7 +23,7 @@ export class TransactionBuilder {
 
   constructor(
     rpc: Rpc<SolanaRpcApi>,
-    portalProgramId: Address = PORTAL_PROGRAM_ID,
+    portalProgramId: Address,
   ) {
     this.rpc = rpc;
     this.portalProgramId = portalProgramId;

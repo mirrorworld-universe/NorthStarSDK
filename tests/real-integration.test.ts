@@ -19,7 +19,6 @@ import {
   generateKeyPairSigner,
   createKeyPairSignerFromBytes,
   createKeyPairSignerFromPrivateKeyBytes,
-  createSolanaRpc,
   signTransactionMessageWithSigners,
   assertIsTransactionWithBlockhashLifetime,
   assertIsSendableTransaction,
@@ -31,7 +30,7 @@ import {
   KeyPairSigner,
 } from "@solana/kit";
 import bs58 from "bs58";
-import { NorthStarSDK, PORTAL_PROGRAM_ID, PortalProgram } from "../src";
+import { NorthStarSDK } from "../src";
 import { config } from "dotenv";
 config();
 
@@ -80,6 +79,13 @@ function getTransferSourceAddress(): Address {
   return address(raw || DEFAULT_TRANSFER_SOURCE_ADDRESS);
 }
 
+function getPortalProgramId(): Address {
+  const raw = process.env.PORTAL_PROGRAM_ID!.trim();
+  return address(raw);
+}
+
+const PORTAL_PROGRAM_ID = getPortalProgramId();
+
 async function loadFundingSignerFromEnv(): Promise<KeyPairSigner> {
   const secret = process.env.TRANSFER_SOURCE_PRIVATE_KEY?.trim();
   if (!secret) {
@@ -115,7 +121,7 @@ function encodeSystemProgramTransfer(lamports: bigint): Uint8Array {
   return data;
 }
 
-type SolanaRpc = ReturnType<typeof createSolanaRpc>;
+type SolanaRpc = ReturnType<NorthStarSDK["getRpc"]>;
 async function transferLamportsFromFunding(
   sdk: NorthStarSDK,
   rpc: SolanaRpc,
@@ -154,7 +160,7 @@ async function transferLamportsFromFunding(
 describe("Real Integration Tests", () => {
 
   let sdk: NorthStarSDK;
-  let rpc: ReturnType<typeof createSolanaRpc>;
+  let rpc: ReturnType<NorthStarSDK["getRpc"]>;
   let portalOwner: KeyPairSigner;
   let delegatedAccount: KeyPairSigner;
   /** Separate fee payer for close_session: short TTL + wait for slot expiry; avoids fee_vault conflict with the main flow. */
@@ -162,15 +168,14 @@ describe("Real Integration Tests", () => {
   const gridId = 1;
 
   beforeAll(async () => {
-    rpc = createSolanaRpc(VALIDATOR_RPC);
-
     sdk = new NorthStarSDK({
-      solanaNetwork: "localnet",
+      portalProgramId: PORTAL_PROGRAM_ID,
       customEndpoints: {
         solana: VALIDATOR_RPC,
         ephemeralRollup: EPHEMERAL_ROLLUP_RPC,
       },
     });
+    rpc = sdk.getRpc();
 
     portalOwner = await generateKeyPairSigner();
     delegatedAccount = await generateKeyPairSigner();
@@ -231,11 +236,8 @@ describe("Real Integration Tests", () => {
 
   test("Step 1: Open Session - should create session and fee vault accounts", async () => {
     console.log("\n=== Step 1: Open Session ===");
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      portalOwner.address,
-      gridId,
-    );
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(portalOwner.address);
+    const sessionPDA = await sdk.portal.deriveSessionPDA(portalOwner.address, gridId);
+    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(portalOwner.address);
 
     const { signature } = await sdk.openSession(
       portalOwner,
@@ -275,9 +277,8 @@ describe("Real Integration Tests", () => {
     "Step 2: Delegate Account - should create delegation record",
     async () => {
       console.log("\n=== Step 2: Delegate Account ===");
-      const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
-        delegatedAccount.address,
-      );
+      const delegationRecordPDA =
+        await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.address);
 
       console.log("Delegated account (keypair):", delegatedAccount.address);
       console.log("Delegation record PDA:", delegationRecordPDA);
@@ -312,14 +313,11 @@ describe("Real Integration Tests", () => {
 
     console.log("\n=== Step 3: Deposit Fee ===");
 
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      portalOwner.address,
-      gridId,
-    );
+    const sessionPDA = await sdk.portal.deriveSessionPDA(portalOwner.address, gridId);
 
     console.log("Session PDA:", sessionPDA);
 
-    const depositReceiptPDA = await PortalProgram.deriveDepositReceiptPDA(
+    const depositReceiptPDA = await sdk.portal.deriveDepositReceiptPDA(
       sessionPDA,
       portalOwner.address,
     );
@@ -335,7 +333,7 @@ describe("Real Integration Tests", () => {
     expect(receiptInfo?.value).not.toBeNull();
     console.log("Receipt info:", receiptInfo);
     const raw = accountDataToBytes(receiptInfo!.value!.data);
-    const receiptState = PortalProgram.parseDepositReceipt(raw);
+    const receiptState = sdk.portal.parseDepositReceipt(raw);
     expect(receiptState.balance).toBeGreaterThanOrEqual(500_000n);
     console.log("✓ Deposit receipt balance:", receiptState.balance.toString());
   }, 60000);
@@ -343,9 +341,8 @@ describe("Real Integration Tests", () => {
   test("Step 4: Undelegate - should assign account back and clear delegation record", async () => {
     console.log("\n=== Step 4: Undelegate ===");
 
-    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
-      delegatedAccount.address,
-    );
+    const delegationRecordPDA =
+      await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.address);
 
     await sdk.undelegate(portalOwner, delegatedAccount, {
       commitment: "confirmed",
@@ -373,13 +370,11 @@ describe("Real Integration Tests", () => {
 
     const closeGridId = 1;
     const ttlSlots = 15n;
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
+    const sessionPDA = await sdk.portal.deriveSessionPDA(
       closeSessionOwner.address,
       closeGridId,
     );
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
-      closeSessionOwner.address,
-    );
+    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(closeSessionOwner.address);
 
     await sdk.openSession(
       closeSessionOwner,
@@ -398,7 +393,7 @@ describe("Real Integration Tests", () => {
     expect(sessionAccount?.value).not.toBeNull();
     const sessRaw = accountDataToBytes(sessionAccount!.value!.data);
     console.log("Session raw:", sessRaw);
-    const sessionState = PortalProgram.parseSession(sessRaw);
+    const sessionState = sdk.portal.parseSession(sessRaw);
     console.log("Session state:", sessionState);
     const expireAfter = sessionState.createdAt + sessionState.ttlSlots + 1n;
 
@@ -440,8 +435,9 @@ describe("Real Integration Tests", () => {
     console.log("\n=== Step 6: Verify ER RPC ===");
 
     const erSdk = new NorthStarSDK({
-      solanaNetwork: "devnet",
+      portalProgramId: PORTAL_PROGRAM_ID,
       customEndpoints: {
+        solana: VALIDATOR_RPC,
         ephemeralRollup: EPHEMERAL_ROLLUP_RPC,
       },
     });

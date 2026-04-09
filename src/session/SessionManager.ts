@@ -1,9 +1,5 @@
-import { Address, address } from "@solana/addresses";
-import {
-  PortalProgram,
-  OpenSessionParams,
-  PORTAL_PROGRAM_ID,
-} from "../programs/portal";
+import { Address } from "@solana/addresses";
+import { PortalProgram } from "../programs/portal";
 
 export interface Session {
   pda: Address;
@@ -26,7 +22,7 @@ export class SessionManager {
   private portalProgramId: Address;
   private sessions: Map<string, Session> = new Map();
 
-  constructor(portalProgramId: Address = PORTAL_PROGRAM_ID) {
+  constructor(portalProgramId: Address) {
     this.portalProgramId = portalProgramId;
   }
 

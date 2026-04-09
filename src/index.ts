@@ -49,10 +49,12 @@ const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
  */
 export class NorthStarSDK {
   private rpc: Rpc<SolanaRpcApi>;
+  private ephemeral_rpc: Rpc<SolanaRpcApi>;
   private ephemeralRollupReader: EphemeralRollupReader;
-  private accountResolver: AccountResolver;
+  public accountResolver: AccountResolver;
   private config: NorthStarConfig;
   private portalProgramId: Address;
+  public readonly portal: PortalProgram;
   private sendTransactionWithoutConfirming: ReturnType<
     typeof sendTransactionWithoutConfirmingFactory
   >;
@@ -64,6 +66,7 @@ export class NorthStarSDK {
   constructor(config: NorthStarConfig) {
     this.config = config;
     this.portalProgramId = config.portalProgramId;
+    this.portal = new PortalProgram(this.portalProgramId);
 
     const solanaRpc =
       config.customEndpoints.solana;
@@ -71,6 +74,7 @@ export class NorthStarSDK {
 
     const ephemeralRollupRpc =
       config.customEndpoints.ephemeralRollup;
+    this.ephemeral_rpc = createSolanaRpc(ephemeralRollupRpc);
     this.ephemeralRollupReader = new EphemeralRollupReader(ephemeralRollupRpc);
 
     this.accountResolver = new AccountResolver(
@@ -136,6 +140,17 @@ export class NorthStarSDK {
    */
   getRpc(): Rpc<SolanaRpcApi> {
     return this.rpc;
+  }
+
+  /**
+   * Get Ephemeral Rollup RPC instance
+   */
+  getEphemeralRpc(): Rpc<SolanaRpcApi> {
+    return this.ephemeral_rpc;
+  }
+
+  getPortalProgramId(): Address {
+    return this.portalProgramId;
   }
 
   private sleep(ms: number): Promise<void> {
@@ -218,15 +233,8 @@ export class NorthStarSDK {
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      signer.address,
-      gridId,
-      this.portalProgramId,
-    );
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
-      signer.address,
-      this.portalProgramId,
-    );
+    const sessionPDA = await this.portal.deriveSessionPDA(signer.address, gridId);
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.address);
 
     const instruction = {
       version: 0,
@@ -237,7 +245,7 @@ export class NorthStarSDK {
         { address: feeVaultPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeOpenSession({
+      data: this.portal.encodeOpenSession({
         gridId,
         ttlSlots: BigInt(ttlSlots),
         feeCap: BigInt(feeCap),
@@ -276,10 +284,8 @@ export class NorthStarSDK {
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
-      delegatedAccount,
-      this.portalProgramId,
-    );
+    const delegationRecordPDA =
+      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
     const instruction = {
       version: 0,
@@ -291,7 +297,7 @@ export class NorthStarSDK {
         { address: delegationRecordPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeDelegate({ gridId }),
+      data: this.portal.encodeDelegate({ gridId }),
     };
 
     const { value: latestBlockhash } = await this.rpc
@@ -327,15 +333,10 @@ export class NorthStarSDK {
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      sessionOwner,
-      gridId,
-      this.portalProgramId,
-    );
-    const depositReceiptPDA = await PortalProgram.deriveDepositReceiptPDA(
+    const sessionPDA = await this.portal.deriveSessionPDA(sessionOwner, gridId);
+    const depositReceiptPDA = await this.portal.deriveDepositReceiptPDA(
       sessionPDA,
       sessionOwner,
-      this.portalProgramId,
     );
 
     const instruction = {
@@ -348,7 +349,7 @@ export class NorthStarSDK {
         { address: sessionOwner, role: 0 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeDepositFee({ lamports: BigInt(lamports) }),
+      data: this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
     };
 
     const { value: latestBlockhash } = await this.rpc
@@ -382,10 +383,8 @@ export class NorthStarSDK {
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
-      delegatedAccount,
-      this.portalProgramId,
-    );
+    const delegationRecordPDA =
+      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
     const instruction = {
       version: 0,
@@ -397,7 +396,7 @@ export class NorthStarSDK {
         { address: delegationRecordPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeUndelegate(),
+      data: this.portal.encodeUndelegate(),
     };
 
     const { value: latestBlockhash } = await this.rpc
@@ -431,15 +430,8 @@ export class NorthStarSDK {
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      signer.address,
-      gridId,
-      this.portalProgramId,
-    );
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
-      signer.address,
-      this.portalProgramId,
-    );
+    const sessionPDA = await this.portal.deriveSessionPDA(signer.address, gridId);
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.address);
 
     const instruction = {
       version: 0,
@@ -450,7 +442,7 @@ export class NorthStarSDK {
         { address: feeVaultPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeCloseSession({ gridId }),
+      data: this.portal.encodeCloseSession({ gridId }),
     };
 
     const { value: latestBlockhash } = await this.rpc
@@ -483,15 +475,8 @@ export class NorthStarSDK {
     feeCap: number = 1_000_000,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      signer.address,
-      gridId,
-      this.portalProgramId,
-    );
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
-      signer.address,
-      this.portalProgramId,
-    );
+    const sessionPDA = await this.portal.deriveSessionPDA(signer.address, gridId);
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.address);
 
     const instruction = {
       version: 0,
@@ -502,7 +487,7 @@ export class NorthStarSDK {
         { address: feeVaultPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeOpenSession({
+      data: this.portal.encodeOpenSession({
         gridId,
         ttlSlots: BigInt(ttlSlots),
         feeCap: BigInt(feeCap),
@@ -546,10 +531,8 @@ export class NorthStarSDK {
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
     const delegatedAccount = delegatedAccountSigner.address;
-    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
-      delegatedAccount,
-      this.portalProgramId,
-    );
+    const delegationRecordPDA =
+      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
     const assignToPortalInstruction = {
       version: 0,
@@ -578,7 +561,7 @@ export class NorthStarSDK {
         { address: delegationRecordPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeDelegate({ gridId }),
+      data: this.portal.encodeDelegate({ gridId }),
     };
 
     const { value: latestBlockhash } = await this.rpc
@@ -622,15 +605,10 @@ export class NorthStarSDK {
     lamports: number,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      sessionOwner,
-      gridId,
-      this.portalProgramId,
-    );
-    const depositReceiptPDA = await PortalProgram.deriveDepositReceiptPDA(
+    const sessionPDA = await this.portal.deriveSessionPDA(sessionOwner, gridId);
+    const depositReceiptPDA = await this.portal.deriveDepositReceiptPDA(
       sessionPDA,
       sessionOwner,
-      this.portalProgramId,
     );
 
     const instruction = {
@@ -643,7 +621,7 @@ export class NorthStarSDK {
         { address: sessionOwner, role: 0 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeDepositFee({ lamports: BigInt(lamports) }),
+      data: this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
     };
 
     const { value: latestBlockhash } = await this.rpc
@@ -682,10 +660,8 @@ export class NorthStarSDK {
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
     const delegatedAccount = delegatedAccountSigner.address;
-    const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
-      delegatedAccount,
-      this.portalProgramId,
-    );
+    const delegationRecordPDA =
+      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
     const instruction = {
       version: 0,
@@ -701,7 +677,7 @@ export class NorthStarSDK {
         { address: delegationRecordPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeUndelegate(),
+      data: this.portal.encodeUndelegate(),
     };
 
     const { value: latestBlockhash } = await this.rpc
@@ -739,15 +715,8 @@ export class NorthStarSDK {
     gridId: number,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      signer.address,
-      gridId,
-      this.portalProgramId,
-    );
-    const feeVaultPDA = await PortalProgram.deriveFeeVaultPDA(
-      signer.address,
-      this.portalProgramId,
-    );
+    const sessionPDA = await this.portal.deriveSessionPDA(signer.address, gridId);
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.address);
 
     const instruction = {
       version: 0,
@@ -758,7 +727,7 @@ export class NorthStarSDK {
         { address: feeVaultPDA, role: 1 as const },
         { address: SYSTEM_PROGRAM_ID, role: 0 as const },
       ],
-      data: PortalProgram.encodeCloseSession({ gridId }),
+      data: this.portal.encodeCloseSession({ gridId }),
     };
 
     const { value: latestBlockhash } = await this.rpc
