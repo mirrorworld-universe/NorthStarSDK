@@ -13,7 +13,6 @@ import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
 import { AccountResolver } from "./readers/AccountResolver";
 import { PortalProgram } from "./programs/portal";
 import {
-  buildAndSignVersionedTransaction,
   getVersionedTxSignatureBase58,
   sendRawVersionedTransaction,
   signVersionedTransaction,
@@ -41,7 +40,21 @@ export interface DelegateV1Signers {
   feePayerSigner?: Keypair;
 }
 
-/** 钱包对「已本地部分签名」的交易做最终签名；不传 signers。无 feePayerSigner 时，该签名同时承担用户/fee payer 角色。 */
+/** openSession / closeSession：user 由 signTransaction 签名；可选本地 fee payer。 */
+export interface SessionV1Signers {
+  feePayerSigner?: Keypair;
+}
+
+/** depositFee：depositor 与 fee payer；无 depositorSigner 时由钱包签 user。 */
+export interface DepositFeeV1Signers {
+  depositorSigner?: Keypair;
+  feePayerSigner?: Keypair;
+}
+
+/** undelegate：与 delegate 相同（被委托账户 + 可选 fee payer）。 */
+export type UndelegateV1Signers = DelegateV1Signers;
+
+/** 钱包对「已本地部分签名」的交易补全签名；无本地 signer 时由该步完成 user 等剩余签名。 */
 export type WalletSignTransaction = (
   transaction: VersionedTransaction,
 ) => Promise<VersionedTransaction>;
@@ -207,6 +220,52 @@ export class NorthStarSDK {
     const signature = getVersionedTxSignatureBase58(transaction);
     await this.confirmSignature(signature, options);
     return { signature };
+  }
+
+  private dedupeSigners(signers: Keypair[]): Keypair[] {
+    const seen = new Set<string>();
+    const out: Keypair[] = [];
+    for (const k of signers) {
+      const b = k.publicKey.toBase58();
+      if (!seen.has(b)) {
+        seen.add(b);
+        out.push(k);
+      }
+    }
+    return out;
+  }
+
+  /** 用 Object.keys 收集 signers 对象中全部已定义的 Keypair（跳过 undefined）。 */
+  private keypairsFromSignersRecord(signers: object): Keypair[] {
+    const rec = signers as Record<string, Keypair | undefined>;
+    const out: Keypair[] = [];
+    for (const k of Object.keys(rec)) {
+      const kp = rec[k];
+      if (kp) out.push(kp);
+    }
+    return out;
+  }
+
+  /**
+   * 与 delegate_v1 一致：先本地 signers 部分签名，再 signTransaction（钱包），最后上链确认。
+   */
+  private async sendTxV1(
+    payerKey: PublicKey,
+    instructions: TransactionInstruction[],
+    signTransaction: WalletSignTransaction,
+    localSigners: Keypair[],
+    options: TransactionOptions,
+  ): Promise<TransactionResult> {
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
+    const messageV0 = new TransactionMessage({
+      payerKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions,
+    }).compileToV0Message();
+    let tx = new VersionedTransaction(messageV0);
+    tx = signVersionedTransaction(tx, this.dedupeSigners(localSigners));
+    tx = await signTransaction(tx);
+    return this.sendAndConfirmTransactionWithoutWebsocket(tx, options);
   }
 
   async buildOpenSession(
@@ -400,22 +459,21 @@ export class NorthStarSDK {
   }
 
   async openSession(
-    signer: Keypair,
+    user: PublicKey,
     gridId: number,
     ttlSlots: number = 2000,
     feeCap: number = 1_000_000,
+    signTransaction: WalletSignTransaction,
+    signers: SessionV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA(
-      signer.publicKey,
-      gridId,
-    );
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.publicKey);
+    const sessionPDA = await this.portal.deriveSessionPDA(user, gridId);
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(user);
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: user, isSigner: true, isWritable: true },
         { pubkey: sessionPDA, isSigner: false, isWritable: true },
         { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -429,15 +487,21 @@ export class NorthStarSDK {
       ),
     });
 
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-    const tx = buildAndSignVersionedTransaction(
-      signer,
-      latestBlockhash.blockhash,
-      [ix],
-    );
+    const feePayer = signers.feePayerSigner?.publicKey ?? user;
+    if (
+      signers.feePayerSigner &&
+      !signers.feePayerSigner.publicKey.equals(feePayer)
+    ) {
+      throw new Error("signers.feePayerSigner must match fee payer pubkey");
+    }
 
-    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      tx,
+    const localSigners = this.keypairsFromSignersRecord(signers);
+
+    const { signature } = await this.sendTxV1(
+      feePayer,
+      [ix],
+      signTransaction,
+      localSigners,
       options,
     );
 
@@ -448,53 +512,6 @@ export class NorthStarSDK {
   }
 
   async delegate(
-    signer: Keypair,
-    delegatedAccountSigner: Keypair,
-    gridId: number,
-    ownerProgramId: PublicKey,
-    options: TransactionOptions = {},
-  ): Promise<TransactionResult> {
-    const delegatedAccount = delegatedAccountSigner.publicKey;
-    const delegationRecordPDA =
-      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        {
-          pubkey: delegatedAccount,
-          isSigner: true,
-          isWritable: true,
-        },
-        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(this.portal.encodeDelegate({ gridId })),
-    });
-
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-    const messageV0 = new TransactionMessage({
-      payerKey: signer.publicKey,
-      recentBlockhash: latestBlockhash.blockhash,
-      instructions: [ix],
-    }).compileToV0Message();
-    const tx = new VersionedTransaction(messageV0);
-    tx.sign([signer, delegatedAccountSigner]);
-
-    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      tx,
-      options,
-    );
-
-    console.log(`✓ Account delegated: ${delegatedAccount.toBase58()}`);
-    console.log(`  Signature: ${signature}`);
-
-    return { signature };
-  }
-
-  async delegate_v1(
     user: PublicKey,
     gridId: number,
     ownerProgramId: PublicKey,
@@ -522,27 +539,15 @@ export class NorthStarSDK {
       data: Buffer.from(this.portal.encodeDelegate({ gridId })),
     });
 
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-    const messageV0 = new TransactionMessage({
-      payerKey: user,
-      recentBlockhash: latestBlockhash.blockhash,
-      instructions: [ix],
-    }).compileToV0Message();
-    let tx = new VersionedTransaction(messageV0);
+    const feePayer = signers.feePayerSigner?.publicKey ?? user;
 
-    const localSigners: Keypair[] = [signers.delegatedAccountSigner];
-    if (signers.feePayerSigner) {
-      if (!signers.feePayerSigner.publicKey.equals(user)) {
-        throw new Error("signers.feePayerSigner must match user (fee payer)");
-      }
-      localSigners.push(signers.feePayerSigner);
-    }
-    tx = signVersionedTransaction(tx, localSigners);
+    const localSigners = this.keypairsFromSignersRecord(signers);
 
-    tx = await signTransaction(tx);
-
-    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      tx,
+    const { signature } = await this.sendTxV1(
+      feePayer,
+      [ix],
+      signTransaction,
+      localSigners,
       options,
     );
 
@@ -552,11 +557,25 @@ export class NorthStarSDK {
     return { signature };
   }
 
+  /** @deprecated 同 {@link delegate}，保留别名便于兼容旧调用。 */
+  async delegate_v1(
+    user: PublicKey,
+    gridId: number,
+    ownerProgramId: PublicKey,
+    signTransaction: WalletSignTransaction,
+    signers: DelegateV1Signers,
+    options: TransactionOptions = {},
+  ): Promise<TransactionResult> {
+    return this.delegate(user, gridId, ownerProgramId, signTransaction, signers, options);
+  }
+
   async depositFee(
-    signer: Keypair,
+    user: PublicKey,
     sessionOwner: PublicKey,
     gridId: number,
     lamports: number,
+    signTransaction: WalletSignTransaction,
+    signers: DepositFeeV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
     const sessionPDA = await this.portal.deriveSessionPDA(sessionOwner, gridId);
@@ -568,7 +587,7 @@ export class NorthStarSDK {
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: user, isSigner: true, isWritable: true },
         { pubkey: sessionPDA, isSigner: false, isWritable: true },
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
         { pubkey: sessionOwner, isSigner: false, isWritable: false },
@@ -579,15 +598,27 @@ export class NorthStarSDK {
       ),
     });
 
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-    const tx = buildAndSignVersionedTransaction(
-      signer,
-      latestBlockhash.blockhash,
-      [ix],
-    );
+    const feePayer = signers.feePayerSigner?.publicKey ?? user;
+    if (
+      signers.depositorSigner &&
+      !signers.depositorSigner.publicKey.equals(user)
+    ) {
+      throw new Error("signers.depositorSigner.publicKey must equal user");
+    }
+    if (
+      signers.feePayerSigner &&
+      !signers.feePayerSigner.publicKey.equals(feePayer)
+    ) {
+      throw new Error("signers.feePayerSigner must match fee payer pubkey");
+    }
 
-    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      tx,
+    const localSigners = this.keypairsFromSignersRecord(signers);
+
+    const { signature } = await this.sendTxV1(
+      feePayer,
+      [ix],
+      signTransaction,
+      localSigners,
       options,
     );
 
@@ -598,18 +629,19 @@ export class NorthStarSDK {
   }
 
   async undelegate(
-    signer: Keypair,
-    delegatedAccountSigner: Keypair,
+    user: PublicKey,
+    signTransaction: WalletSignTransaction,
+    signers: UndelegateV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const delegatedAccount = delegatedAccountSigner.publicKey;
+    const delegatedAccount = signers.delegatedAccountSigner.publicKey;
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: user, isSigner: true, isWritable: true },
         {
           pubkey: delegatedAccount,
           isSigner: true,
@@ -622,17 +654,15 @@ export class NorthStarSDK {
       data: Buffer.from(this.portal.encodeUndelegate()),
     });
 
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-    const messageV0 = new TransactionMessage({
-      payerKey: signer.publicKey,
-      recentBlockhash: latestBlockhash.blockhash,
-      instructions: [ix],
-    }).compileToV0Message();
-    const tx = new VersionedTransaction(messageV0);
-    tx.sign([signer, delegatedAccountSigner]);
+    const feePayer = signers.feePayerSigner?.publicKey ?? user;
 
-    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      tx,
+    const localSigners = this.keypairsFromSignersRecord(signers);
+
+    const { signature } = await this.sendTxV1(
+      feePayer,
+      [ix],
+      signTransaction,
+      localSigners,
       options,
     );
 
@@ -643,20 +673,19 @@ export class NorthStarSDK {
   }
 
   async closeSession(
-    signer: Keypair,
+    user: PublicKey,
     gridId: number,
+    signTransaction: WalletSignTransaction,
+    signers: SessionV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA(
-      signer.publicKey,
-      gridId,
-    );
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.publicKey);
+    const sessionPDA = await this.portal.deriveSessionPDA(user, gridId);
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(user);
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: user, isSigner: true, isWritable: true },
         { pubkey: sessionPDA, isSigner: false, isWritable: true },
         { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
@@ -664,15 +693,21 @@ export class NorthStarSDK {
       data: Buffer.from(this.portal.encodeCloseSession({ gridId })),
     });
 
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-    const tx = buildAndSignVersionedTransaction(
-      signer,
-      latestBlockhash.blockhash,
-      [ix],
-    );
+    const feePayer = signers.feePayerSigner?.publicKey ?? user;
+    if (
+      signers.feePayerSigner &&
+      !signers.feePayerSigner.publicKey.equals(feePayer)
+    ) {
+      throw new Error("signers.feePayerSigner must match fee payer pubkey");
+    }
 
-    const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      tx,
+    const localSigners = this.keypairsFromSignersRecord(signers);
+
+    const { signature } = await this.sendTxV1(
+      feePayer,
+      [ix],
+      signTransaction,
+      localSigners,
       options,
     );
 

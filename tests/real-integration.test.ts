@@ -22,6 +22,7 @@ import {
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { NorthStarSDK, encodeSystemProgramAssignData } from "../src";
+import { signVersionedTransaction } from "../src/solana/kitCompat";
 import { config } from "dotenv";
 config();
 
@@ -30,6 +31,12 @@ const SYSTEM_PROGRAM_ID = SystemProgram.programId;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 模拟网页钱包：在本地用给定 Keypair 补全尚未签名的账户（与 delegate / undelegate 等配合）。 */
+function walletSignLocal(...keypairs: Keypair[]) {
+  return async (tx: VersionedTransaction) =>
+    signVersionedTransaction(tx, keypairs);
 }
 
 /** Normalize common account `data` shapes to a Uint8Array. */
@@ -215,10 +222,12 @@ describe("Real Integration Tests", () => {
     const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(portalUser.publicKey);
 
     const { signature } = await sdk.openSession(
-      portalUser,
+      portalUser.publicKey,
       gridId,
       2000,
       1_000_000,
+      walletSignLocal(portalUser),
+      {},
       {
         commitment: "confirmed",
         skipPreflight: skipPreflight,
@@ -266,10 +275,11 @@ describe("Real Integration Tests", () => {
       console.log("✓ Assign executed and confirmed");
 
       const { signature } = await sdk.delegate(
-        portalUser,
-        delegatedAccount,
+        portalUser.publicKey,
         gridId,
         SYSTEM_PROGRAM_ID,
+        walletSignLocal(portalUser),
+        { delegatedAccountSigner: delegatedAccount },
         {
           commitment: "confirmed",
           skipPreflight: skipPreflight,
@@ -301,10 +311,18 @@ describe("Real Integration Tests", () => {
       portalUser.publicKey,
     );
 
-    await sdk.depositFee(portalUser, portalUser.publicKey, gridId, 500_000, {
-      commitment: "confirmed",
-      skipPreflight: skipPreflight,
-    });
+    await sdk.depositFee(
+      portalUser.publicKey,
+      portalUser.publicKey,
+      gridId,
+      500_000,
+      async (tx) => tx,
+      { depositorSigner: portalUser },
+      {
+        commitment: "confirmed",
+        skipPreflight: skipPreflight,
+      },
+    );
 
     await sleep(1500);
 
@@ -323,10 +341,15 @@ describe("Real Integration Tests", () => {
     const delegationRecordPDA =
       await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.publicKey);
 
-    await sdk.undelegate(portalUser, delegatedAccount, {
-      commitment: "confirmed",
-      skipPreflight: skipPreflight,
-    });
+    await sdk.undelegate(
+      portalUser.publicKey,
+      walletSignLocal(portalUser),
+      { delegatedAccountSigner: delegatedAccount },
+      {
+        commitment: "confirmed",
+        skipPreflight: skipPreflight,
+      },
+    );
 
     await sleep(1500);
 
@@ -354,10 +377,12 @@ describe("Real Integration Tests", () => {
     const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(closeSessionOwner.publicKey);
 
     await sdk.openSession(
-      closeSessionOwner,
+      closeSessionOwner.publicKey,
       closeGridId,
       Number(ttlSlots),
       1_000_000,
+      walletSignLocal(closeSessionOwner),
+      {},
       {
         commitment: "confirmed",
         skipPreflight: skipPreflight,
@@ -390,10 +415,16 @@ describe("Real Integration Tests", () => {
     const slotNow = BigInt(await rpc.getSlot("confirmed"));
     expect(slotNow > expireAfter).toBe(true);
 
-    await sdk.closeSession(closeSessionOwner, closeGridId, {
-      commitment: "confirmed",
-      skipPreflight: skipPreflight,
-    });
+    await sdk.closeSession(
+      closeSessionOwner.publicKey,
+      closeGridId,
+      walletSignLocal(closeSessionOwner),
+      {},
+      {
+        commitment: "confirmed",
+        skipPreflight: skipPreflight,
+      },
+    );
 
     await sleep(1500);
 
