@@ -2,7 +2,10 @@
  * Core types and interfaces for North Star SDK
  */
 
-import { Address } from "@solana/addresses";
+import { PublicKey } from "@solana/web3.js";
+
+/** Account address (base-58 pubkey). */
+export type Address = PublicKey;
 
 /**
  * Account information from Ephemeral Rollup or Solana
@@ -44,7 +47,6 @@ export interface EphemeralRollupAccountResponse {
  * SDK configuration
  */
 export interface NorthStarConfig {
-  solanaNetwork?: "mainnet" | "testnet" | "devnet" | "localnet";
   portalProgramId: Address;
   customEndpoints: {
     solana: string;

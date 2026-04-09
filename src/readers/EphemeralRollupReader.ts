@@ -3,7 +3,7 @@
  * Handles reading account data from Ephemeral Rollup RPC
  */
 
-import { Address } from "@solana/addresses";
+import { PublicKey } from "@solana/web3.js";
 import axios, { AxiosInstance } from "axios";
 import { AccountInfo, EphemeralRollupAccountResponse } from "../types";
 
@@ -27,7 +27,7 @@ export class EphemeralRollupReader {
    * @param address - Account address
    * @returns Account information or null if not found
    */
-  async getAccountInfo(address: Address): Promise<AccountInfo | null> {
+  async getAccountInfo(address: PublicKey): Promise<AccountInfo | null> {
     try {
       const response = await this.client.post<EphemeralRollupAccountResponse>(
         "",
@@ -36,7 +36,7 @@ export class EphemeralRollupReader {
           id: 1,
           method: "getAccountInfo",
           params: [
-            address,
+            address.toBase58(),
             {
               encoding: "base64",
             },
@@ -51,11 +51,11 @@ export class EphemeralRollupReader {
       const result = response.data.result.value;
 
       return {
-        address: address,
+        address,
         data: new Uint8Array(Buffer.from(result.data[0], "base64")),
         executable: result.executable,
         lamports: BigInt(result.lamports),
-        owner: result.owner as Address,
+        owner: new PublicKey(result.owner),
         slot: BigInt(response.data.result.context.slot),
         source: "ephemeral-rollup",
       };
@@ -71,7 +71,7 @@ export class EphemeralRollupReader {
    * @returns Array of account information (null for not found)
    */
   async getMultipleAccounts(
-    addresses: Address[],
+    addresses: PublicKey[],
   ): Promise<(AccountInfo | null)[]> {
     try {
       const response = await this.client.post("", {
@@ -79,7 +79,7 @@ export class EphemeralRollupReader {
         id: 1,
         method: "getMultipleAccounts",
         params: [
-          addresses,
+          addresses.map((a) => a.toBase58()),
           {
             encoding: "base64",
           },
@@ -99,7 +99,7 @@ export class EphemeralRollupReader {
             data: new Uint8Array(Buffer.from(account.data[0], "base64")),
             executable: account.executable,
             lamports: BigInt(account.lamports),
-            owner: account.owner as Address,
+            owner: new PublicKey(account.owner),
             slot: BigInt(response.data.result.context.slot),
             source: "ephemeral-rollup",
           };

@@ -13,29 +13,20 @@
  */
 
 import {
-  AccountRole,
-  Address,
-  address,
-  generateKeyPairSigner,
-  createKeyPairSignerFromBytes,
-  createKeyPairSignerFromPrivateKeyBytes,
-  signTransactionMessageWithSigners,
-  assertIsTransactionWithBlockhashLifetime,
-  assertIsSendableTransaction,
-  pipe,
-  createTransactionMessage,
-  setTransactionMessageFeePayerSigner,
-  setTransactionMessageLifetimeUsingBlockhash,
-  appendTransactionMessageInstructions,
-  KeyPairSigner,
-} from "@solana/kit";
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
+} from "@solana/web3.js";
 import bs58 from "bs58";
 import { NorthStarSDK, encodeSystemProgramAssignData } from "../src";
 import { config } from "dotenv";
 config();
 
 let skipPreflight = true;
-const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
+const SYSTEM_PROGRAM_ID = SystemProgram.programId;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -44,46 +35,23 @@ function sleep(ms: number) {
 /** Normalize common account `data` shapes to a Uint8Array. */
 function accountDataToBytes(data: any): Uint8Array {
   if (data instanceof Uint8Array) return data;
-  // Convention: plain strings are bs58-encoded account data.
+  if (Buffer.isBuffer(data)) return new Uint8Array(data);
   if (typeof data === "string") return Uint8Array.from(bs58.decode(data));
-  // if (Array.isArray(data) && typeof data[0] === "string") {
-  //   // RPC tuple format: ["<base64>", "base64"]
-  //   return Buffer.from(data[0], "base64");
-  // }
-  // return new Uint8Array(data as ArrayBuffer);
   console.error("Invalid account data: ", data);
   throw new Error("Invalid account data");
 }
 
-function readU64LE(data: Uint8Array, offset: number): bigint {
-  let v = 0n;
-  for (let i = 0; i < 8; i++) {
-    v |= BigInt(data[offset + i]) << BigInt(8 * i);
-  }
-  return v;
-}
-// validator rpc: https://api.devnet.sonic.game    8899
-// ephemeral rollup rpc: https://ephemeral.devnet.sonic.game  8910
-// portal program id: address("5TeWSsjg2gbxCyWVniXeCmwM7UtHTCK7svzJr5xYJzHf")
-// const PORTAL_PROGRAM_ID = address("B519Ej1JFgxWknbUyfSCQ2QX8xTaWP8CAUKFLw2GtgBD");
-// const PORTAL_PROGRAM_ID = address("B519Ej1JFgxWknbUyfSCQ2QX8xTaWP8CAUKFLw2GtgBD");
 const EPHEMERAL_ROLLUP_RPC = "https://ephemeral.devnet.sonic.game";
 const VALIDATOR_RPC = "https://api.devnet.sonic.game";
 
-/** Default funding wallet (devnet); override with TRANSFER_SOURCE_ADDRESS */
-// const DEFAULT_TRANSFER_SOURCE_ADDRESS =
-//   "A8WbfsEkdnFwsxvtDBXuirUnXjriAwQWkc6trVWsTgK5";
-
-
-
-function getPortalProgramId(): Address {
+function getPortalProgramId(): PublicKey {
   const raw = process.env.PORTAL_PROGRAM_ID!.trim();
-  return address(raw);
+  return new PublicKey(raw);
 }
 
 const PORTAL_PROGRAM_ID = getPortalProgramId();
 
-async function loadFundingSignerFromEnv(): Promise<KeyPairSigner> {
+async function loadFundingSignerFromEnv(): Promise<Keypair> {
   const secret = process.env.TRANSFER_SOURCE_PRIVATE_KEY?.trim();
   if (!secret) {
     throw new Error(
@@ -91,66 +59,41 @@ async function loadFundingSignerFromEnv(): Promise<KeyPairSigner> {
     );
   }
   const bytes = Uint8Array.from(bs58.decode(secret));
-  let signer: KeyPairSigner;
   if (bytes.length === 64) {
-    signer = await createKeyPairSignerFromBytes(bytes);
-  } else if (bytes.length === 32) {
-    signer = await createKeyPairSignerFromPrivateKeyBytes(bytes);
-  } else {
-    throw new Error(
-      `TRANSFER_SOURCE_PRIVATE_KEY decodes to ${bytes.length} bytes; expected 32 or 64.`,
-    );
+    return Keypair.fromSecretKey(bytes);
   }
-  // const expected = getTransferSourceAddress();
-  // if (signer.address !== expected) {
-  //   throw new Error(
-  //     `Funding keypair address ${String(signer.address)} does not match TRANSFER_SOURCE_ADDRESS ${String(expected)}`,
-  //   );
-  // }
-
-  console.log("Funding signer:", signer.address);
-  return signer;
+  if (bytes.length === 32) {
+    return Keypair.fromSeed(bytes);
+  }
+  throw new Error(
+    `TRANSFER_SOURCE_PRIVATE_KEY decodes to ${bytes.length} bytes; expected 32 or 64.`,
+  );
 }
 
-/** System Program `Transfer` instruction (bincode-style: u32 LE index 2 + u64 LE lamports). */
-function encodeSystemProgramTransfer(lamports: bigint): Uint8Array {
-  const data = new Uint8Array(4 + 8);
-  new DataView(data.buffer).setUint32(0, 2, true);
-  new DataView(data.buffer).setBigUint64(4, lamports, true);
-  return data;
-}
+type SolanaConnection = ReturnType<NorthStarSDK["getRpc"]>;
 
-type SolanaRpc = ReturnType<NorthStarSDK["getRpc"]>;
 async function transferLamportsFromFunding(
   sdk: NorthStarSDK,
-  rpc: SolanaRpc,
-  fundingSigner: KeyPairSigner,
-  to: Address,
+  connection: SolanaConnection,
+  fundingSigner: Keypair,
+  to: PublicKey,
   lamports: bigint,
 ): Promise<void> {
-  const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
-  const instruction = {
-    programAddress: SYSTEM_PROGRAM_ID,
-    accounts: [
-      { address: fundingSigner.address, role: AccountRole.WRITABLE_SIGNER },
-      { address: to, role: AccountRole.WRITABLE },
-    ],
-    data: encodeSystemProgramTransfer(lamports),
-  };
+  const { blockhash } = await connection.getLatestBlockhash();
+  const ix = SystemProgram.transfer({
+    fromPubkey: fundingSigner.publicKey,
+    toPubkey: to,
+    lamports: Number(lamports),
+  });
+  const messageV0 = new TransactionMessage({
+    payerKey: fundingSigner.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [ix],
+  }).compileToV0Message();
+  const tx = new VersionedTransaction(messageV0);
+  tx.sign([fundingSigner]);
 
-  const transactionMessage = pipe(
-    createTransactionMessage({ version: 0 }),
-    (tx) => setTransactionMessageFeePayerSigner(fundingSigner, tx),
-    (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-    (tx) => appendTransactionMessageInstructions([instruction], tx),
-  );
-
-  const transaction =
-    await signTransactionMessageWithSigners(transactionMessage);
-  assertIsSendableTransaction(transaction);
-  assertIsTransactionWithBlockhashLifetime(transaction);
-
-  await sdk.sendAndConfirmTransactionWithoutWebsocket(transaction, {
+  await sdk.sendAndConfirmTransactionWithoutWebsocket(tx, {
     commitment: "confirmed",
     skipPreflight: true,
   });
@@ -158,52 +101,45 @@ async function transferLamportsFromFunding(
 
 async function assignAccountOwnerAndConfirm(
   sdk: NorthStarSDK,
-  rpc: SolanaRpc,
-  feePayerSigner: KeyPairSigner,
-  accountSigner: KeyPairSigner,
-  currentOwnerProgramId: Address,
-  newOwnerProgramId: Address,
+  connection: SolanaConnection,
+  feePayerSigner: Keypair,
+  accountSigner: Keypair,
+  currentOwnerProgramId: PublicKey,
+  newOwnerProgramId: PublicKey,
 ): Promise<void> {
-  const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
-  const instruction = {
-    version: 0,
-    programAddress: currentOwnerProgramId,
-    accounts: [
+  const { blockhash } = await connection.getLatestBlockhash();
+  const ix = new TransactionInstruction({
+    programId: currentOwnerProgramId,
+    keys: [
       {
-        address: accountSigner.address,
-        role: AccountRole.WRITABLE_SIGNER,
-        signer: accountSigner,
+        pubkey: accountSigner.publicKey,
+        isSigner: true,
+        isWritable: true,
       },
     ],
-    data: encodeSystemProgramAssignData(newOwnerProgramId),
-  };
+    data: Buffer.from(encodeSystemProgramAssignData(newOwnerProgramId)),
+  });
 
-  const transactionMessage = pipe(
-    createTransactionMessage({ version: 0 }),
-    (tx) => setTransactionMessageFeePayerSigner(feePayerSigner, tx),
-    (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-    (tx) => appendTransactionMessageInstructions([instruction], tx),
-  );
+  const messageV0 = new TransactionMessage({
+    payerKey: feePayerSigner.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [ix],
+  }).compileToV0Message();
+  const tx = new VersionedTransaction(messageV0);
+  tx.sign([feePayerSigner, accountSigner]);
 
-  const transaction =
-    await signTransactionMessageWithSigners(transactionMessage);
-  assertIsSendableTransaction(transaction);
-  assertIsTransactionWithBlockhashLifetime(transaction);
-
-  await sdk.sendAndConfirmTransactionWithoutWebsocket(transaction, {
+  await sdk.sendAndConfirmTransactionWithoutWebsocket(tx, {
     commitment: "confirmed",
     skipPreflight: skipPreflight,
   });
 }
 
 describe("Real Integration Tests", () => {
-
   let sdk: NorthStarSDK;
-  let rpc: ReturnType<NorthStarSDK["getRpc"]>;
-  let portalOwner: KeyPairSigner;
-  let delegatedAccount: KeyPairSigner;
-  /** Separate fee payer for close_session: short TTL + wait for slot expiry; avoids fee_vault conflict with the main flow. */
-  let closeSessionOwner: KeyPairSigner;
+  let rpc: SolanaConnection;
+  let portalUser: Keypair;
+  let delegatedAccount: Keypair;
+  let closeSessionOwner: Keypair;
   const gridId = 1;
 
   beforeAll(async () => {
@@ -216,20 +152,20 @@ describe("Real Integration Tests", () => {
     });
     rpc = sdk.getRpc();
 
-    portalOwner = await generateKeyPairSigner();
-    delegatedAccount = await generateKeyPairSigner();
-    closeSessionOwner = await generateKeyPairSigner();
+    portalUser = Keypair.generate();
+    delegatedAccount = Keypair.generate();
+    closeSessionOwner = Keypair.generate();
 
     console.log("\n=== Test Setup ===");
-    console.log("Portal owner:", portalOwner.address);
-    console.log("Delegated account:", delegatedAccount.address);
-    console.log("Close-session owner:", closeSessionOwner.address);
+    console.log("Portal owner:", portalUser.publicKey.toBase58());
+    console.log("Delegated account:", delegatedAccount.publicKey.toBase58());
+    console.log("Close-session owner:", closeSessionOwner.publicKey.toBase58());
 
     try {
       const fundingSigner = await loadFundingSignerFromEnv();
       console.log(
         "Funding transfers from",
-        fundingSigner.address,
+        fundingSigner.publicKey.toBase58(),
         "(override with TRANSFER_SOURCE_ADDRESS)",
       );
 
@@ -237,7 +173,7 @@ describe("Real Integration Tests", () => {
         sdk,
         rpc,
         fundingSigner,
-        portalOwner.address,
+        portalUser.publicKey,
         200_000_000n,
       );
       console.log("✓ Transferred 2 SOL to portal owner");
@@ -246,7 +182,7 @@ describe("Real Integration Tests", () => {
         sdk,
         rpc,
         fundingSigner,
-        delegatedAccount.address,
+        delegatedAccount.publicKey,
         100_000_000n,
       );
       console.log("✓ Transferred 1 SOL to delegated account");
@@ -255,17 +191,17 @@ describe("Real Integration Tests", () => {
         sdk,
         rpc,
         fundingSigner,
-        closeSessionOwner.address,
+        closeSessionOwner.publicKey,
         200_000_000n,
       );
       console.log("✓ Transferred 2 SOL to close-session owner");
 
       await sleep(500);
 
-      const balance = await rpc.getBalance(portalOwner.address).send();
+      const balance = await rpc.getBalance(portalUser.publicKey);
       console.log("Portal owner balance:", balance);
 
-      const delegatedBalance = await rpc.getBalance(delegatedAccount.address).send();
+      const delegatedBalance = await rpc.getBalance(delegatedAccount.publicKey);
       console.log("Delegated account balance:", delegatedBalance);
     } catch (e: any) {
       console.log("⚠ Funding transfer failed:", String(e));
@@ -275,11 +211,11 @@ describe("Real Integration Tests", () => {
 
   test("Step 1: Open Session - should create session and fee vault accounts", async () => {
     console.log("\n=== Step 1: Open Session ===");
-    const sessionPDA = await sdk.portal.deriveSessionPDA(portalOwner.address, gridId);
-    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(portalOwner.address);
+    const sessionPDA = await sdk.portal.deriveSessionPDA(portalUser.publicKey, gridId);
+    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(portalUser.publicKey);
 
     const { signature } = await sdk.openSession(
-      portalOwner,
+      portalUser,
       gridId,
       2000,
       1_000_000,
@@ -292,23 +228,20 @@ describe("Real Integration Tests", () => {
     console.log("✓ Session opened");
     console.log("  Signature:", signature);
 
-    // Wait a bit for the transaction to be processed
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    // Retry getting account info with retries
-    let sessionInfo = await rpc.getAccountInfo(sessionPDA).send();
+    let sessionInfo = await rpc.getAccountInfo(sessionPDA);
 
     console.log("Session info:", sessionInfo);
     expect(sessionInfo != null).toBe(true);
-    expect(sessionInfo!.value != null).toBe(true);
+    expect(sessionInfo).not.toBeNull();
     console.log("✓ Session account exists on-chain");
 
-    // Retry getting account info with retries
-    let feeVaultInfo = await rpc.getAccountInfo(feeVaultPDA).send();
+    let feeVaultInfo = await rpc.getAccountInfo(feeVaultPDA);
 
     console.log("FeeVault info:", feeVaultInfo);
     expect(feeVaultInfo != null).toBe(true);
-    expect(feeVaultInfo!.value != null).toBe(true);
+    expect(feeVaultInfo).not.toBeNull();
     console.log("✓ FeeVault account exists on-chain");
   }, 60000);
 
@@ -317,15 +250,15 @@ describe("Real Integration Tests", () => {
     async () => {
       console.log("\n=== Step 2: Delegate Account ===");
       const delegationRecordPDA =
-        await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.address);
+        await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.publicKey);
 
-      console.log("Delegated account (keypair):", delegatedAccount.address);
-      console.log("Delegation record PDA:", delegationRecordPDA);
+      console.log("Delegated account (keypair):", delegatedAccount.publicKey.toBase58());
+      console.log("Delegation record PDA:", delegationRecordPDA.toBase58());
 
       await assignAccountOwnerAndConfirm(
         sdk,
         rpc,
-        portalOwner,
+        portalUser,
         delegatedAccount,
         SYSTEM_PROGRAM_ID,
         PORTAL_PROGRAM_ID,
@@ -333,7 +266,7 @@ describe("Real Integration Tests", () => {
       console.log("✓ Assign executed and confirmed");
 
       const { signature } = await sdk.delegate(
-        portalOwner,
+        portalUser,
         delegatedAccount,
         gridId,
         SYSTEM_PROGRAM_ID,
@@ -344,45 +277,41 @@ describe("Real Integration Tests", () => {
       );
       console.log("Signature:", signature);
       console.log("✓ Delegation created");
-      // Wait a bit for the transaction to be processed
       await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      // Retry getting account info with retries
-      let delegationInfo = await rpc.getAccountInfo(delegationRecordPDA).send();
+      let delegationInfo = await rpc.getAccountInfo(delegationRecordPDA);
 
       console.log("Delegation info:", delegationInfo);
-      // != null simultaneously excludes null and undefined.
       expect(delegationInfo != null).toBe(true);
-      expect(delegationInfo!.value != null).toBe(true);
+      expect(delegationInfo).not.toBeNull();
       console.log("✓ Delegation record exists on-chain");
     },
     60000,
   );
 
   test("Step 3: Deposit Fee - should create or top up deposit receipt", async () => {
-
     console.log("\n=== Step 3: Deposit Fee ===");
 
-    const sessionPDA = await sdk.portal.deriveSessionPDA(portalOwner.address, gridId);
+    const sessionPDA = await sdk.portal.deriveSessionPDA(portalUser.publicKey, gridId);
 
-    console.log("Session PDA:", sessionPDA);
+    console.log("Session PDA:", sessionPDA.toBase58());
 
     const depositReceiptPDA = await sdk.portal.deriveDepositReceiptPDA(
       sessionPDA,
-      portalOwner.address,
+      portalUser.publicKey,
     );
 
-    await sdk.depositFee(portalOwner, portalOwner.address, gridId, 500_000, {
+    await sdk.depositFee(portalUser, portalUser.publicKey, gridId, 500_000, {
       commitment: "confirmed",
       skipPreflight: skipPreflight,
     });
 
     await sleep(1500);
 
-    const receiptInfo = await rpc.getAccountInfo(depositReceiptPDA).send();
-    expect(receiptInfo?.value).not.toBeNull();
+    const receiptInfo = await rpc.getAccountInfo(depositReceiptPDA);
+    expect(receiptInfo).not.toBeNull();
     console.log("Receipt info:", receiptInfo);
-    const raw = accountDataToBytes(receiptInfo!.value!.data);
+    const raw = accountDataToBytes(receiptInfo!.data);
     const receiptState = sdk.portal.parseDepositReceipt(raw);
     expect(receiptState.balance).toBeGreaterThanOrEqual(500_000n);
     console.log("✓ Deposit receipt balance:", receiptState.balance.toString());
@@ -392,22 +321,20 @@ describe("Real Integration Tests", () => {
     console.log("\n=== Step 4: Undelegate ===");
 
     const delegationRecordPDA =
-      await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.address);
+      await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.publicKey);
 
-    await sdk.undelegate(portalOwner, delegatedAccount, {
+    await sdk.undelegate(portalUser, delegatedAccount, {
       commitment: "confirmed",
       skipPreflight: skipPreflight,
     });
 
     await sleep(1500);
 
-    const delegatedInfo = await rpc
-      .getAccountInfo(delegatedAccount.address)
-      .send();
-    expect(delegatedInfo?.value?.owner).toBe(SYSTEM_PROGRAM_ID);
+    const delegatedInfo = await rpc.getAccountInfo(delegatedAccount.publicKey);
+    expect(delegatedInfo?.owner.equals(SYSTEM_PROGRAM_ID)).toBe(true);
 
-    const recordInfo = await rpc.getAccountInfo(delegationRecordPDA).send();
-    const recordData = recordInfo?.value?.data;
+    const recordInfo = await rpc.getAccountInfo(delegationRecordPDA);
+    const recordData = recordInfo?.data;
     if (recordData != null) {
       const raw = accountDataToBytes(recordData);
       expect(raw.every((b) => b === 0)).toBe(true);
@@ -421,10 +348,10 @@ describe("Real Integration Tests", () => {
     const closeGridId = 1;
     const ttlSlots = 15n;
     const sessionPDA = await sdk.portal.deriveSessionPDA(
-      closeSessionOwner.address,
+      closeSessionOwner.publicKey,
       closeGridId,
     );
-    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(closeSessionOwner.address);
+    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(closeSessionOwner.publicKey);
 
     await sdk.openSession(
       closeSessionOwner,
@@ -432,16 +359,16 @@ describe("Real Integration Tests", () => {
       Number(ttlSlots),
       1_000_000,
       {
-      commitment: "confirmed",
-      skipPreflight: skipPreflight,
+        commitment: "confirmed",
+        skipPreflight: skipPreflight,
       },
     );
 
     await sleep(1000);
-    console.log("Session PDA:", sessionPDA);
-    const sessionAccount = await rpc.getAccountInfo(sessionPDA).send();
-    expect(sessionAccount?.value).not.toBeNull();
-    const sessRaw = accountDataToBytes(sessionAccount!.value!.data);
+    console.log("Session PDA:", sessionPDA.toBase58());
+    const sessionAccount = await rpc.getAccountInfo(sessionPDA);
+    expect(sessionAccount).not.toBeNull();
+    const sessRaw = accountDataToBytes(sessionAccount!.data);
     console.log("Session raw:", sessRaw);
     const sessionState = sdk.portal.parseSession(sessRaw);
     console.log("Session state:", sessionState);
@@ -451,7 +378,7 @@ describe("Real Integration Tests", () => {
     const maxWaitMs = 120_000;
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
-      const slot = await (rpc as any).getSlot({ commitment: "confirmed" }).send();
+      const slot = await rpc.getSlot("confirmed");
       const s = BigInt(slot);
       if (s > expireAfter) {
         console.log("✓ Current slot", s.toString(), "past expiry");
@@ -460,9 +387,7 @@ describe("Real Integration Tests", () => {
       await sleep(400);
     }
 
-    const slotNow = BigInt(
-      await (rpc as any).getSlot({ commitment: "confirmed" }).send(),
-    );
+    const slotNow = BigInt(await rpc.getSlot("confirmed"));
     expect(slotNow > expireAfter).toBe(true);
 
     await sdk.closeSession(closeSessionOwner, closeGridId, {
@@ -472,12 +397,12 @@ describe("Real Integration Tests", () => {
 
     await sleep(1500);
 
-    const sessionAfter = await rpc.getAccountInfo(sessionPDA).send();
-    const vaultAfter = await rpc.getAccountInfo(feeVaultPDA).send();
+    const sessionAfter = await rpc.getAccountInfo(sessionPDA);
+    const vaultAfter = await rpc.getAccountInfo(feeVaultPDA);
     console.log("Session after:", sessionAfter);
     console.log("Fee vault after:", vaultAfter);
-    expect(sessionAfter?.value).toBeNull();
-    expect(vaultAfter?.value).toBeNull();
+    expect(sessionAfter).toBeNull();
+    expect(vaultAfter).toBeNull();
     console.log("✓ Session and fee vault closed");
   }, 180000);
 
@@ -494,17 +419,5 @@ describe("Real Integration Tests", () => {
 
     const health = await erSdk.checkHealth();
     console.log("Health check:", health);
-
-    // ER should be running now that session was opened
-    // Note: This may fail if ER takes time to start
   }, 30000);
-
 });
-
-function safeStringify(obj: any): string {
-  try {
-    return JSON.stringify(obj, (_, v) => typeof v === 'bigint' ? v.toString() : v);
-  } catch (e) {
-    return "Error stringifying object";
-  }
-}

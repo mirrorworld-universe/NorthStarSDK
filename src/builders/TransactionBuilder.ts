@@ -3,8 +3,7 @@
  * Constructs Solana transactions for Portal operations
  */
 
-import { Address, address } from "@solana/addresses";
-import { Rpc, SolanaRpcApi } from "@solana/rpc";
+import { Connection, PublicKey } from "@solana/web3.js";
 import {
   PortalProgram,
   OpenSessionParams,
@@ -15,17 +14,17 @@ import {
 import { ReadTransactionParams } from "../types";
 
 export class TransactionBuilder {
-  private rpc: Rpc<SolanaRpcApi>;
-  private portalProgramId: Address;
-  private readonly systemProgramId: Address = address(
+  private connection: Connection;
+  private portalProgramId: PublicKey;
+  private readonly systemProgramId: PublicKey = new PublicKey(
     "11111111111111111111111111111111",
   );
 
   constructor(
-    rpc: Rpc<SolanaRpcApi>,
-    portalProgramId: Address,
+    connection: Connection,
+    portalProgramId: PublicKey,
   ) {
-    this.rpc = rpc;
+    this.connection = connection;
     this.portalProgramId = portalProgramId;
   }
 
@@ -39,9 +38,7 @@ export class TransactionBuilder {
   async buildReadTx(params: ReadTransactionParams): Promise<any> {
     const { gridId, accountAddress, sessionPDA } = params;
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
+    const latestBlockhash = await this.connection.getLatestBlockhash();
 
     const delegateParams: DelegateParams = { gridId };
     const delegateInstruction = PortalProgram.encodeDelegate(delegateParams);
@@ -51,7 +48,7 @@ export class TransactionBuilder {
       lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
       instructions: [
         {
-          programAddress: this.portalProgramId,
+          programPublicKey: this.portalProgramId,
           accounts: [{ address: accountAddress, role: 1 }],
           data: delegateInstruction,
         },
@@ -70,14 +67,12 @@ export class TransactionBuilder {
    * @returns Prepared transaction data
    */
   async buildOpenSessionTx(
-    owner: Address,
+    owner: PublicKey,
     gridId: number,
     ttlSlots: bigint = BigInt(2000),
     feeCap: bigint = BigInt(1_000_000),
   ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
+    const latestBlockhash = await this.connection.getLatestBlockhash();
 
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       owner,
@@ -101,7 +96,7 @@ export class TransactionBuilder {
       feePayer: owner,
       instructions: [
         {
-          programAddress: this.portalProgramId,
+          programPublicKey: this.portalProgramId,
           accounts: [
             { address: owner, role: 1 },
             { address: sessionPDA, role: 1 },
@@ -121,10 +116,8 @@ export class TransactionBuilder {
    * @param gridId - Grid ID
    * @returns Prepared transaction data
    */
-  async buildCloseSessionTx(owner: Address, gridId: number): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
+  async buildCloseSessionTx(owner: PublicKey, gridId: number): Promise<any> {
+    const latestBlockhash = await this.connection.getLatestBlockhash();
 
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       owner,
@@ -144,7 +137,7 @@ export class TransactionBuilder {
       feePayer: owner,
       instructions: [
         {
-          programAddress: this.portalProgramId,
+          programPublicKey: this.portalProgramId,
           accounts: [
             { address: owner, role: 1 },
             { address: sessionPDA, role: 1 },
@@ -166,14 +159,12 @@ export class TransactionBuilder {
    * @returns Prepared transaction data
    */
   async buildDepositFeeTx(
-    depositor: Address,
-    sessionOwner: Address,
+    depositor: PublicKey,
+    sessionOwner: PublicKey,
     gridId: number,
     lamports: bigint,
   ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
+    const latestBlockhash = await this.connection.getLatestBlockhash();
 
     const sessionPDA = await PortalProgram.deriveSessionPDA(
       sessionOwner,
@@ -194,7 +185,7 @@ export class TransactionBuilder {
       feePayer: depositor,
       instructions: [
         {
-          programAddress: this.portalProgramId,
+          programPublicKey: this.portalProgramId,
           accounts: [
             { address: depositor, role: 1 },
             { address: sessionPDA, role: 1 },
@@ -217,13 +208,11 @@ export class TransactionBuilder {
    * @returns Prepared transaction data
    */
   async buildDelegateTx(
-    owner: Address,
-    delegatedAccount: Address,
+    owner: PublicKey,
+    delegatedAccount: PublicKey,
     gridId: number,
   ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
+    const latestBlockhash = await this.connection.getLatestBlockhash();
 
     const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
@@ -238,7 +227,7 @@ export class TransactionBuilder {
       feePayer: owner,
       instructions: [
         {
-          programAddress: this.portalProgramId,
+          programPublicKey: this.portalProgramId,
           accounts: [
             { address: owner, role: 1 },
             { address: delegatedAccount, role: 1 },
@@ -260,12 +249,10 @@ export class TransactionBuilder {
    * @returns Prepared transaction data
    */
   async buildUndelegateTx(
-    owner: Address,
-    delegatedAccount: Address,
+    owner: PublicKey,
+    delegatedAccount: PublicKey,
   ): Promise<any> {
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
+    const latestBlockhash = await this.connection.getLatestBlockhash();
 
     const delegationRecordPDA = await PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
@@ -278,7 +265,7 @@ export class TransactionBuilder {
       feePayer: owner,
       instructions: [
         {
-          programAddress: this.portalProgramId,
+          programPublicKey: this.portalProgramId,
           accounts: [
             { address: owner, role: 1 },
             { address: delegatedAccount, role: 1 },

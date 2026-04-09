@@ -3,21 +3,20 @@
  * Implements the fallback chain: Ephemeral Rollup → Solana L1
  */
 
-import { Address } from "@solana/addresses";
-import { Rpc, SolanaRpcApi } from "@solana/rpc";
+import { Connection, PublicKey } from "@solana/web3.js";
 import { AccountInfo } from "../types";
 import { EphemeralRollupReader } from "./EphemeralRollupReader";
 
 export class AccountResolver {
   private ephemeralRollupReader: EphemeralRollupReader;
-  private solanaRpc: Rpc<SolanaRpcApi>;
+  private connection: Connection;
 
   constructor(
     ephemeralRollupReader: EphemeralRollupReader,
-    solanaRpc: Rpc<SolanaRpcApi>,
+    connection: Connection,
   ) {
     this.ephemeralRollupReader = ephemeralRollupReader;
-    this.solanaRpc = solanaRpc;
+    this.connection = connection;
   }
 
   /**
@@ -27,12 +26,15 @@ export class AccountResolver {
    * @param address - Account address to resolve
    * @returns Account information with source indicator
    */
-  async resolve(address: Address, search_source: "ephemeral" | "solana"): Promise<AccountInfo> {
+  async resolve(
+    address: PublicKey,
+    search_source: "ephemeral" | "solana",
+  ): Promise<AccountInfo> {
     if (search_source === "ephemeral") {
       try {
         const account = await this.ephemeralRollupReader.getAccountInfo(address);
         if (account) {
-          console.log(`✓ Account resolved from Ephemeral Rollup: ${address}`);
+          console.log(`✓ Account resolved from Ephemeral Rollup: ${address.toBase58()}`);
           return account;
         }
       } catch (error) {
@@ -41,29 +43,28 @@ export class AccountResolver {
       }
     } else if (search_source === "solana") {
       try {
-        console.log(`→ Fetching from Solana L1: ${address}`);
-        const response = await this.solanaRpc
-          .getAccountInfo(address, { encoding: "base64" })
-          .send();
+        console.log(`→ Fetching from Solana L1: ${address.toBase58()}`);
+        const response = await this.connection.getAccountInfo(address);
 
-        if (!response.value) {
-          throw new Error(`Account not found: ${address}`);
+        if (!response) {
+          throw new Error(`Account not found: ${address.toBase58()}`);
         }
 
-        const solanaAccount = response.value;
+        const solanaAccount = response;
+        const slot = await this.connection.getSlot();
 
         return {
-          address: address,
-          data: new Uint8Array(Buffer.from(solanaAccount.data[0], "base64")),
+          address,
+          data: new Uint8Array(solanaAccount.data),
           executable: solanaAccount.executable,
-          lamports: solanaAccount.lamports,
-          owner: solanaAccount.owner as Address,
-          slot: BigInt(response.context.slot),
+          lamports: BigInt(solanaAccount.lamports),
+          owner: solanaAccount.owner,
+          slot: BigInt(slot),
           source: "solana",
         };
       } catch (error) {
         console.error("All read sources failed:", error);
-        throw new Error(`Failed to resolve account ${address} from any source`);
+        throw new Error(`Failed to resolve account ${address.toBase58()} from any source`);
       }
     }
 
@@ -74,7 +75,10 @@ export class AccountResolver {
    * @param addresses - Array of account addresses
    * @returns Array of account information
    */
-  async resolveMultiple(addresses: Address[], search_source: "ephemeral" | "solana"): Promise<AccountInfo[]> {
+  async resolveMultiple(
+    addresses: PublicKey[],
+    search_source: "ephemeral" | "solana",
+  ): Promise<AccountInfo[]> {
     const results: AccountInfo[] = [];
 
     for (const address of addresses) {
@@ -82,7 +86,7 @@ export class AccountResolver {
         const account = await this.resolve(address, search_source);
         results.push(account);
       } catch (error) {
-        console.error(`Failed to resolve ${address}:`, error);
+        console.error(`Failed to resolve ${address.toBase58()}:`, error);
         throw error;
       }
     }

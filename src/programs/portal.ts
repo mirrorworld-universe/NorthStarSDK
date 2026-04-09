@@ -5,11 +5,7 @@
 
 
 import { deserialize, field, serialize, variant } from "@dao-xyz/borsh";
-import {
-  Address,
-  getAddressEncoder,
-  getProgramDerivedAddress,
-} from "@solana/addresses";
+import { PublicKey } from "@solana/web3.js";
 import { toU64LE, readU64LE, readU128LE } from "../utils/common";
 
 /**
@@ -176,25 +172,25 @@ function assertAccountDataLength(
 
 
 export class PortalProgram {
-  private readonly defaultProgramId: Address;
+  private readonly defaultProgramId: PublicKey;
 
-  constructor(defaultProgramId: Address) {
+  constructor(defaultProgramId: PublicKey) {
     this.defaultProgramId = defaultProgramId;
   }
 
-  getProgramId(): Address {
+  getProgramId(): PublicKey {
     return this.defaultProgramId;
   }
 
-  async deriveSessionPDA(owner: Address, gridId: number): Promise<Address> {
+  async deriveSessionPDA(owner: PublicKey, gridId: number): Promise<PublicKey> {
     return PortalProgram.deriveSessionPDA(owner, gridId, this.defaultProgramId);
   }
 
-  async deriveFeeVaultPDA(owner: Address): Promise<Address> {
+  async deriveFeeVaultPDA(owner: PublicKey): Promise<PublicKey> {
     return PortalProgram.deriveFeeVaultPDA(owner, this.defaultProgramId);
   }
 
-  async deriveDelegationRecordPDA(delegatedAccount: Address): Promise<Address> {
+  async deriveDelegationRecordPDA(delegatedAccount: PublicKey): Promise<PublicKey> {
     return PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
       this.defaultProgramId,
@@ -202,9 +198,9 @@ export class PortalProgram {
   }
 
   async deriveDepositReceiptPDA(
-    session: Address,
-    recipient: Address,
-  ): Promise<Address> {
+    session: PublicKey,
+    recipient: PublicKey,
+  ): Promise<PublicKey> {
     return PortalProgram.deriveDepositReceiptPDA(
       session,
       recipient,
@@ -253,15 +249,18 @@ export class PortalProgram {
    * Seeds: ["session", owner, grid_id (8 bytes LE)]
    */
   static async deriveSessionPDA(
-    owner: Address,
+    owner: PublicKey,
     gridId: number,
-    programId: Address,
-  ): Promise<Address> {
-    const addressEncoder = getAddressEncoder();
-    const [pda] = await getProgramDerivedAddress({
-      programAddress: programId,
-      seeds: ["session", addressEncoder.encode(owner), toU64LE(gridId)],
-    });
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("session", "utf8"),
+        owner.toBuffer(),
+        toU64LE(gridId),
+      ],
+      programId,
+    );
     return pda;
   }
 
@@ -270,14 +269,13 @@ export class PortalProgram {
    * Seeds: ["fee_vault", owner]
    */
   static async deriveFeeVaultPDA(
-    owner: Address,
-    programId: Address,
-  ): Promise<Address> {
-    const addressEncoder = getAddressEncoder();
-    const [pda] = await getProgramDerivedAddress({
-      programAddress: programId,
-      seeds: ["fee_vault", addressEncoder.encode(owner)],
-    });
+    owner: PublicKey,
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("fee_vault", "utf8"), owner.toBuffer()],
+      programId,
+    );
     return pda;
   }
 
@@ -286,14 +284,13 @@ export class PortalProgram {
    * Seeds: ["delegation", delegated_account]
    */
   static async deriveDelegationRecordPDA(
-    delegatedAccount: Address,
-    programId: Address ,
-  ): Promise<Address> {
-    const addressEncoder = getAddressEncoder();
-    const [pda] = await getProgramDerivedAddress({
-      programAddress: programId,
-      seeds: ["delegation", addressEncoder.encode(delegatedAccount)],
-    });
+    delegatedAccount: PublicKey,
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("delegation", "utf8"), delegatedAccount.toBuffer()],
+      programId,
+    );
     return pda;
   }
 
@@ -302,19 +299,18 @@ export class PortalProgram {
    * Seeds: ["deposit_receipt", session, recipient]
    */
   static async deriveDepositReceiptPDA(
-    session: Address,
-    recipient: Address,
-    programId: Address ,
-  ): Promise<Address> {
-    const addressEncoder = getAddressEncoder();
-    const [pda] = await getProgramDerivedAddress({
-      programAddress: programId,
-      seeds: [
-        "deposit_receipt",
-        addressEncoder.encode(session),
-        addressEncoder.encode(recipient),
+    session: PublicKey,
+    recipient: PublicKey,
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("deposit_receipt", "utf8"),
+        session.toBuffer(),
+        recipient.toBuffer(),
       ],
-    });
+      programId,
+    );
     return pda;
   }
 

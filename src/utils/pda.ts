@@ -1,69 +1,60 @@
 /**
- * PDA Derivation Utilities for Portal Program
- * Uses Anza Kit's getProgramDerivedAddress
+ * PDA Derivation Utilities for Portal Program (@solana/web3.js)
  */
 
-import { Address, getProgramDerivedAddress } from "@solana/addresses";
+import { PublicKey } from "@solana/web3.js";
 import { toU64LE } from "./common";
 
-/**
- * Derive SessionPDA address using Kit's PDA derivation
- * Seeds: ["session", owner, grid_id (8 bytes LE)]
- */
 export async function deriveSessionPDA(
-  owner: Address,
+  owner: PublicKey,
   gridId: number,
-  portalProgramId: Address,
-): Promise<Address> {
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: portalProgramId,
-    seeds: ["session", owner, toU64LE(gridId)],
-  });
+  portalProgramId: PublicKey,
+): Promise<PublicKey> {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("session", "utf8"),
+      owner.toBuffer(),
+      toU64LE(gridId),
+    ],
+    portalProgramId,
+  );
   return pda;
 }
 
-/**
- * Derive FeeVaultPDA address using Kit's PDA derivation
- * Seeds: ["fee_vault", owner]
- */
 export async function deriveFeeVaultPDA(
-  owner: Address,
-  portalProgramId: Address,
-): Promise<Address> {
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: portalProgramId,
-    seeds: ["fee_vault", owner],
-  });
+  owner: PublicKey,
+  portalProgramId: PublicKey,
+): Promise<PublicKey> {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("fee_vault", "utf8"), owner.toBuffer()],
+    portalProgramId,
+  );
   return pda;
 }
 
-/**
- * Derive DelegationRecordPDA address using Kit's PDA derivation
- * Seeds: ["delegation", delegated_account]
- */
 export async function deriveDelegationRecordPDA(
-  delegatedAccount: Address,
-  portalProgramId: Address,
-): Promise<Address> {
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: portalProgramId,
-    seeds: ["delegation", delegatedAccount],
-  });
+  delegatedAccount: PublicKey,
+  portalProgramId: PublicKey,
+): Promise<PublicKey> {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("delegation", "utf8"), delegatedAccount.toBuffer()],
+    portalProgramId,
+  );
   return pda;
 }
 
-/**
- * Derive DepositReceiptPDA address using Kit's PDA derivation
- * Seeds: ["deposit_receipt", session, recipient]
- */
 export async function deriveDepositReceiptPDA(
-  session: Address,
-  recipient: Address,
-  portalProgramId: Address,
-): Promise<Address> {
-  const [pda] = await getProgramDerivedAddress({
-    programAddress: portalProgramId,
-    seeds: ["deposit_receipt", session, recipient],
-  });
+  session: PublicKey,
+  recipient: PublicKey,
+  portalProgramId: PublicKey,
+): Promise<PublicKey> {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("deposit_receipt", "utf8"),
+      session.toBuffer(),
+      recipient.toBuffer(),
+    ],
+    portalProgramId,
+  );
   return pda;
 }

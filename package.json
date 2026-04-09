@@ -6,8 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest",
-    "test:integration": "jest tests/real-integration.test.ts"
+    "test": "jest --testPathIgnorePatterns=real-integration.test.ts",
+    "test:integration": "jest --runTestsByPath tests/real-integration.test.ts --testTimeout=300000"
   },
   "keywords": [
     "solana",
@@ -19,12 +19,7 @@
   "license": "MIT",
   "dependencies": {
     "@dao-xyz/borsh": "^6.0.1",
-    "@solana/addresses": "^5.0.0",
-    "@solana/keys": "^5.0.0",
-    "@solana/kit": "^5.0.0",
-    "@solana/rpc": "^5.0.0",
-    "@solana/rpc-types": "^5.0.0",
-    "@solana/transactions": "^5.0.0",
+    "@solana/web3.js": "^1.98.4",
     "axios": "^1.6.2",
     "bs58": "^6.0.0",
     "dotenv": "^17.4.1"

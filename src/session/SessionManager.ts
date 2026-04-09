@@ -1,10 +1,10 @@
-import { Address } from "@solana/addresses";
+import { PublicKey } from "@solana/web3.js";
 import { PortalProgram } from "../programs/portal";
 
 export interface Session {
-  pda: Address;
+  pda: PublicKey;
   gridId: number;
-  owner: Address;
+  owner: PublicKey;
   feeCap: bigint;
   ttlSlots: bigint;
   createdAt: number;
@@ -12,17 +12,17 @@ export interface Session {
 }
 
 export interface OpenSessionParamsSDK {
-  owner: Address;
+  owner: PublicKey;
   gridId: number;
   ttlSlots?: bigint;
   feeCap?: bigint;
 }
 
 export class SessionManager {
-  private portalProgramId: Address;
+  private portalProgramId: PublicKey;
   private sessions: Map<string, Session> = new Map();
 
-  constructor(portalProgramId: Address) {
+  constructor(portalProgramId: PublicKey) {
     this.portalProgramId = portalProgramId;
   }
 
@@ -33,7 +33,7 @@ export class SessionManager {
    * @param params - Session creation parameters
    * @returns Session address
    */
-  async openSession(params: OpenSessionParamsSDK): Promise<Address> {
+  async openSession(params: OpenSessionParamsSDK): Promise<PublicKey> {
     const {
       owner,
       gridId,
@@ -57,7 +57,7 @@ export class SessionManager {
       status: "active",
     };
 
-    this.sessions.set(sessionPDA, session);
+    this.sessions.set(sessionPDA.toBase58(), session);
 
     console.log(`✓ Session opened: ${sessionPDA}`);
     console.log(`  Grid ID: ${gridId}`);
@@ -70,14 +70,14 @@ export class SessionManager {
   /**
    * Get session information
    */
-  async getSession(sessionPDA: Address): Promise<Session | null> {
-    return this.sessions.get(sessionPDA) || null;
+  async getSession(sessionPDA: PublicKey): Promise<Session | null> {
+    return this.sessions.get(sessionPDA.toBase58()) || null;
   }
 
   /**
    * Check if session is still valid
    */
-  async isSessionValid(sessionPDA: Address): Promise<boolean> {
+  async isSessionValid(sessionPDA: PublicKey): Promise<boolean> {
     const session = await this.getSession(sessionPDA);
     if (!session) return false;
 
@@ -91,8 +91,8 @@ export class SessionManager {
   /**
    * Close a session
    */
-  async closeSession(sessionPDA: Address): Promise<void> {
-    const session = this.sessions.get(sessionPDA);
+  async closeSession(sessionPDA: PublicKey): Promise<void> {
+    const session = this.sessions.get(sessionPDA.toBase58());
     if (session) {
       session.status = "closed";
       console.log(`✓ Session closed: ${sessionPDA}`);

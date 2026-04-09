@@ -1,34 +1,28 @@
 import {
-  createSolanaRpc,
-  createTransactionMessage,
-  pipe,
-  setTransactionMessageFeePayerSigner,
-  setTransactionMessageLifetimeUsingBlockhash,
-  appendTransactionMessageInstructions,
-  signTransactionMessageWithSigners,
-  assertIsTransactionWithBlockhashLifetime,
-  assertIsSendableTransaction,
-  generateKeyPairSigner,
-  createKeyPairSignerFromBytes,
-  createKeyPairSignerFromPrivateKeyBytes,
-  getSignatureFromTransaction,
-  getAddressEncoder,
-  address,
-  sendTransactionWithoutConfirmingFactory,
-  AccountRole,
-  Address,
-  Rpc,
-  SolanaRpcApi,
-  TransactionSigner,
-  partiallySignTransactionMessageWithSigners,
-} from "@solana/kit";
+  Connection,
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
+} from "@solana/web3.js";
 import bs58 from "bs58";
-import { AccountInfo, NorthStarConfig } from "./types";
+import { AccountInfo, Address, NorthStarConfig } from "./types";
 import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
 import { AccountResolver } from "./readers/AccountResolver";
 import { PortalProgram } from "./programs/portal";
+import {
+  buildAndSignVersionedTransaction,
+  getVersionedTxSignatureBase58,
+  sendRawVersionedTransaction,
+  signVersionedTransaction,
+  toPublicKey,
+} from "./solana/kitCompat";
 
-export type { Address, TransactionSigner };
+/** @solana/web3.js Keypair used wherever a transaction signer is required. */
+export type TransactionSigner = Keypair;
+export type { Address };
 
 export interface TransactionResult {
   signature: string;
@@ -43,20 +37,21 @@ export interface TransactionOptions {
 }
 
 export interface DelegateV1Signers {
-  delegatedAccountSigner: TransactionSigner;
-  feePayerSigner?: TransactionSigner;
+  delegatedAccountSigner: Keypair;
+  feePayerSigner?: Keypair;
 }
 
 /** 钱包对「已本地部分签名」的交易做最终签名；不传 signers。无 feePayerSigner 时，该签名同时承担用户/fee payer 角色。 */
-export type DelegateV1WalletSignTransaction = (transaction: any) => Promise<any>;
+export type WalletSignTransaction = (
+  transaction: VersionedTransaction,
+) => Promise<VersionedTransaction>;
 
-const SYSTEM_PROGRAM_ID = address("11111111111111111111111111111111");
+const SYSTEM_PROGRAM_ID = SystemProgram.programId;
 
-export function encodeSystemProgramAssignData(newProgramOwner: Address): Uint8Array {
-  const addressEncoder = getAddressEncoder();
+export function encodeSystemProgramAssignData(newProgramOwner: PublicKey): Uint8Array {
   const data = new Uint8Array(4 + 32);
   new DataView(data.buffer).setUint32(0, 1, true);
-  data.set(addressEncoder.encode(newProgramOwner), 4);
+  data.set(newProgramOwner.toBuffer(), 4);
   return data;
 }
 
@@ -65,34 +60,24 @@ export function encodeSystemProgramAssignData(newProgramOwner: Address): Uint8Ar
  * Provides unified interface for Ephemeral Rollup interactions
  */
 export class NorthStarSDK {
-  private rpc: Rpc<SolanaRpcApi>;
-  private ephemeral_rpc: Rpc<SolanaRpcApi>;
+  private rpc: Connection;
+  private ephemeral_rpc: Connection;
   private ephemeralRollupReader: EphemeralRollupReader;
   public accountResolver: AccountResolver;
   private config: NorthStarConfig;
-  private portalProgramId: Address;
+  private portalProgramId: PublicKey;
   public readonly portal: PortalProgram;
-  private sendTransactionWithoutConfirming: ReturnType<
-    typeof sendTransactionWithoutConfirmingFactory
-  >;
 
-  /**
-   * Initialize North Star SDK
-   * @param config - SDK configuration
-   */
   constructor(config: NorthStarConfig) {
     this.config = config;
-    this.portalProgramId = config.portalProgramId;
+    this.portalProgramId = toPublicKey(config.portalProgramId);
     this.portal = new PortalProgram(this.portalProgramId);
 
-    const solanaRpc =
-      config.customEndpoints.solana;
-    this.rpc = createSolanaRpc(solanaRpc);
+    const solanaRpc = config.customEndpoints.solana;
+    this.rpc = new Connection(solanaRpc, "confirmed");
 
-
-    const ephemeralRollupRpc =
-      config.customEndpoints.ephemeralRollup;
-    this.ephemeral_rpc = createSolanaRpc(ephemeralRollupRpc);
+    const ephemeralRollupRpc = config.customEndpoints.ephemeralRollup;
+    this.ephemeral_rpc = new Connection(ephemeralRollupRpc, "confirmed");
     this.ephemeralRollupReader = new EphemeralRollupReader(ephemeralRollupRpc);
 
     this.accountResolver = new AccountResolver(
@@ -100,74 +85,54 @@ export class NorthStarSDK {
       this.rpc,
     );
 
-    this.sendTransactionWithoutConfirming = sendTransactionWithoutConfirmingFactory(
-      {
-      rpc: this.rpc,
-      },
-    );
-
     console.log("✓ North Star SDK initialized");
     console.log(`  Solana Network: ${solanaRpc}`);
     console.log(`  Ephemeral Rollup RPC: ${ephemeralRollupRpc}`);
-    console.log(`  Portal Program: ${this.portalProgramId}`);
+    console.log(`  Portal Program: ${this.portalProgramId.toBase58()}`);
   }
 
-  /**
-   * Generate a new keypair signer (for testing)
-   */
-  async generateKeyPair(): Promise<TransactionSigner> {
-    return await generateKeyPairSigner();
+  async generateKeyPair(): Promise<Keypair> {
+    return Keypair.generate();
   }
 
-  /**
-   * Create a keypair signer from base58 encoded private key
-   * @param privateKeyBase58 - Base58 encoded private key
-   */
-  async createKeyPairFromBase58(
-    privateKeyBase58: string,
-  ): Promise<TransactionSigner> {
+  async createKeyPairFromBase58(privateKeyBase58: string): Promise<Keypair> {
     const bytes = Uint8Array.from(bs58.decode(privateKeyBase58.trim()));
     if (bytes.length === 64) {
-      return await createKeyPairSignerFromBytes(bytes);
+      return Keypair.fromSecretKey(bytes);
     }
     if (bytes.length === 32) {
-      return await createKeyPairSignerFromPrivateKeyBytes(bytes);
+      return Keypair.fromSeed(bytes);
     }
     throw new Error(
       `Private key decodes to ${bytes.length} bytes; expected 32 or 64.`,
     );
   }
 
-  /**
-   * Get account information using 2-tier fallback strategy
-   * Priority: Ephemeral Rollup → Solana L1
-   */
-  async getAccountInfo(address: Address, search_source: 'ephemeral' | 'solana'): Promise<AccountInfo> {
+  async getAccountInfo(
+    address: PublicKey,
+    search_source: "ephemeral" | "solana",
+  ): Promise<AccountInfo> {
     return await this.accountResolver.resolve(address, search_source);
   }
 
-  /**
-   * Get multiple accounts in batch
-   */
-  async getMultipleAccounts(addresses: Address[], search_source: 'ephemeral' | 'solana'): Promise<AccountInfo[]> {
+  async getMultipleAccounts(
+    addresses: PublicKey[],
+    search_source: "ephemeral" | "solana",
+  ): Promise<AccountInfo[]> {
     return await this.accountResolver.resolveMultiple(addresses, search_source);
   }
 
-  /**
-   * Get Solana RPC instance
-   */
-  getRpc(): Rpc<SolanaRpcApi> {
+  /** Solana L1 JSON-RPC connection (@solana/web3.js). */
+  getRpc(): Connection {
     return this.rpc;
   }
 
-  /**
-   * Get Ephemeral Rollup RPC instance
-   */
-  getEphemeralRpc(): Rpc<SolanaRpcApi> {
+  /** Ephemeral Rollup JSON-RPC connection (@solana/web3.js). */
+  getEphemeralRpc(): Connection {
     return this.ephemeral_rpc;
   }
 
-  getPortalProgramId(): Address {
+  getPortalProgramId(): PublicKey {
     return this.portalProgramId;
   }
 
@@ -179,15 +144,13 @@ export class NorthStarSDK {
     signature: string,
     options: TransactionOptions = {},
   ): Promise<void> {
-    const commitment = options.commitment || "confirmed";
+    const commitment: string = options.commitment || "confirmed";
     const maxAttempts = options.maxAttempts ?? 20;
     const intervalMs = options.intervalMs ?? 1000;
 
     for (let i = 0; i < maxAttempts; i++) {
-      const statuses = await (this.rpc as any)
-        .getSignatureStatuses([signature])
-        .send();
-      const status = statuses?.value?.[0];
+      const statuses = await this.rpc.getSignatureStatuses([signature]);
+      const status = statuses.value?.[0];
 
       if (status?.err) {
         throw new Error(
@@ -195,13 +158,20 @@ export class NorthStarSDK {
         );
       }
 
+      const cs = status?.confirmationStatus;
+      if (!cs) {
+        await this.sleep(intervalMs);
+        continue;
+      }
+      if (cs === "finalized") {
+        return;
+      }
+      if (commitment === "confirmed" && cs === "confirmed") {
+        return;
+      }
       if (
-        status &&
-        (status.confirmationStatus === commitment ||
-          status.confirmationStatus === "finalized" ||
-          (commitment === "processed" &&
-            (status.confirmationStatus === "confirmed" ||
-              status.confirmationStatus === "finalized")))
+        commitment === "processed" &&
+        (cs === "processed" || cs === "confirmed" || cs === "finalized")
       ) {
         return;
       }
@@ -214,8 +184,18 @@ export class NorthStarSDK {
     );
   }
 
+  private async sendTransactionWithoutConfirming(
+    transaction: VersionedTransaction,
+    options: { commitment?: string; skipPreflight?: boolean },
+  ): Promise<void> {
+    await sendRawVersionedTransaction(this.rpc, transaction, {
+      commitment: (options.commitment as any) ?? "confirmed",
+      skipPreflight: options.skipPreflight ?? true,
+    });
+  }
+
   async sendAndConfirmTransactionWithoutWebsocket(
-    transaction: any,
+    transaction: VersionedTransaction,
     options: TransactionOptions = {},
   ): Promise<{ signature: string }> {
     const commitment = options.commitment || "confirmed";
@@ -224,122 +204,98 @@ export class NorthStarSDK {
       commitment,
       skipPreflight,
     });
-    const signature = getSignatureFromTransaction(transaction);
+    const signature = getVersionedTxSignatureBase58(transaction);
     await this.confirmSignature(signature, options);
     return { signature };
   }
 
-  /**
-   * Build (but don't send) an open session transaction
-   */
   async buildOpenSession(
-    signer: TransactionSigner,
+    signer: Keypair,
     gridId: number,
     ttlSlots: number = 2000,
     feeCap: number = 1_000_000,
   ): Promise<{
-    instructions: any[];
-    feePayer: Address;
+    instructions: TransactionInstruction[];
+    feePayer: PublicKey;
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const sessionPDA = await this.portal.deriveSessionPDA(signer.address, gridId);
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.address);
-
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
-        { address: sessionPDA, role: 1 as const },
-        { address: feeVaultPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
-      ],
-      data: this.portal.encodeOpenSession({
-        gridId,
-        ttlSlots: BigInt(ttlSlots),
-        feeCap: BigInt(feeCap),
-      }),
-    };
-
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+    const sessionPDA = await this.portal.deriveSessionPDA(
+      signer.publicKey,
+      gridId,
     );
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.publicKey);
+
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: sessionPDA, isSigner: false, isWritable: true },
+        { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(
+        this.portal.encodeOpenSession({
+          gridId,
+          ttlSlots: BigInt(ttlSlots),
+          feeCap: BigInt(feeCap),
+        }),
+      ),
+    });
+
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
 
     return {
-      instructions: [...transactionMessage.instructions],
-      feePayer: signer.address,
+      instructions: [ix],
+      feePayer: signer.publicKey,
       blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
     };
   }
 
-  /**
-   * Build (but don't send) a delegate transaction
-   */
   async buildDelegate(
-    signer: TransactionSigner,
-    delegatedAccount: Address,
+    signer: Keypair,
+    delegatedAccount: PublicKey,
     gridId: number,
   ): Promise<{
-    instructions: any[];
-    feePayer: Address;
+    instructions: TransactionInstruction[];
+    feePayer: PublicKey;
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
-        { address: delegatedAccount, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
-        { address: delegationRecordPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: delegatedAccount, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeDelegate({ gridId }),
-    };
+      data: Buffer.from(this.portal.encodeDelegate({ gridId })),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
-    );
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
 
     return {
-      instructions: [...transactionMessage.instructions],
-      feePayer: signer.address,
+      instructions: [ix],
+      feePayer: signer.publicKey,
       blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
     };
   }
 
-  /**
-   * Build (but don't send) a deposit fee transaction
-   */
   async buildDepositFee(
-    signer: TransactionSigner,
-    sessionOwner: Address,
+    signer: Keypair,
+    sessionOwner: PublicKey,
     gridId: number,
     lamports: number,
   ): Promise<{
-    instructions: any[];
-    feePayer: Address;
+    instructions: TransactionInstruction[];
+    feePayer: PublicKey;
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
@@ -349,332 +305,256 @@ export class NorthStarSDK {
       sessionOwner,
     );
 
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
-        { address: sessionPDA, role: 1 as const },
-        { address: depositReceiptPDA, role: 1 as const },
-        { address: sessionOwner, role: 0 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: sessionPDA, isSigner: false, isWritable: true },
+        { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
+        { pubkey: sessionOwner, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
-    };
+      data: Buffer.from(
+        this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
+      ),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
-    );
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
 
     return {
-      instructions: [...transactionMessage.instructions],
-      feePayer: signer.address,
+      instructions: [ix],
+      feePayer: signer.publicKey,
       blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
     };
   }
 
-  /**
-   * Build (but don't send) an undelegate transaction
-   */
   async buildUndelegate(
-    signer: TransactionSigner,
-    delegatedAccount: Address,
+    signer: Keypair,
+    delegatedAccount: PublicKey,
   ): Promise<{
-    instructions: any[];
-    feePayer: Address;
+    instructions: TransactionInstruction[];
+    feePayer: PublicKey;
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
-        { address: delegatedAccount, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
-        { address: delegationRecordPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: delegatedAccount, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeUndelegate(),
-    };
+      data: Buffer.from(this.portal.encodeUndelegate()),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
-    );
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
 
     return {
-      instructions: [...transactionMessage.instructions],
-      feePayer: signer.address,
+      instructions: [ix],
+      feePayer: signer.publicKey,
       blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
     };
   }
 
-  /**
-   * Build (but don't send) a close session transaction
-   */
   async buildCloseSession(
-    signer: TransactionSigner,
+    signer: Keypair,
     gridId: number,
   ): Promise<{
-    instructions: any[];
-    feePayer: Address;
+    instructions: TransactionInstruction[];
+    feePayer: PublicKey;
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const sessionPDA = await this.portal.deriveSessionPDA(signer.address, gridId);
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.address);
-
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
-        { address: sessionPDA, role: 1 as const },
-        { address: feeVaultPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
-      ],
-      data: this.portal.encodeCloseSession({ gridId }),
-    };
-
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+    const sessionPDA = await this.portal.deriveSessionPDA(
+      signer.publicKey,
+      gridId,
     );
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.publicKey);
+
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: sessionPDA, isSigner: false, isWritable: true },
+        { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(this.portal.encodeCloseSession({ gridId })),
+    });
+
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
 
     return {
-      instructions: [...transactionMessage.instructions],
-      feePayer: signer.address,
+      instructions: [ix],
+      feePayer: signer.publicKey,
       blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
     };
   }
 
-  /**
-   * Open a session for Portal operations
-   * Creates a Session and FeeVault for the owner
-   */
   async openSession(
-    signer: TransactionSigner,
+    signer: Keypair,
     gridId: number,
     ttlSlots: number = 2000,
     feeCap: number = 1_000_000,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA(signer.address, gridId);
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.address);
+    const sessionPDA = await this.portal.deriveSessionPDA(
+      signer.publicKey,
+      gridId,
+    );
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.publicKey);
 
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
-        { address: sessionPDA, role: 1 as const },
-        { address: feeVaultPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: sessionPDA, isSigner: false, isWritable: true },
+        { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeOpenSession({
-        gridId,
-        ttlSlots: BigInt(ttlSlots),
-        feeCap: BigInt(feeCap),
-      }),
-    };
+      data: Buffer.from(
+        this.portal.encodeOpenSession({
+          gridId,
+          ttlSlots: BigInt(ttlSlots),
+          feeCap: BigInt(feeCap),
+        }),
+      ),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
+    const tx = buildAndSignVersionedTransaction(
+      signer,
+      latestBlockhash.blockhash,
+      [ix],
     );
 
-    const transaction =
-      await signTransactionMessageWithSigners(transactionMessage);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
-
     const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      transaction,
+      tx,
       options,
     );
 
-    console.log(`✓ Session opened: ${sessionPDA}`);
+    console.log(`✓ Session opened: ${sessionPDA.toBase58()}`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
   }
 
-  /**
-   * Delegate an account to another program via Portal
-   */
   async delegate(
-    signer: TransactionSigner,
-    delegatedAccountSigner: TransactionSigner,
+    signer: Keypair,
+    delegatedAccountSigner: Keypair,
     gridId: number,
-    ownerProgramId: Address,
+    ownerProgramId: PublicKey,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const delegatedAccount = delegatedAccountSigner.address;
+    const delegatedAccount = delegatedAccountSigner.publicKey;
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
-    const delegateInstruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
         {
-          address: delegatedAccount,
-          role: AccountRole.WRITABLE_SIGNER,
-          signer: delegatedAccountSigner,
+          pubkey: delegatedAccount,
+          isSigner: true,
+          isWritable: true,
         },
-        { address: ownerProgramId, role: 0 as const },
-        { address: delegationRecordPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeDelegate({ gridId }),
-    };
+      data: Buffer.from(this.portal.encodeDelegate({ gridId })),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([delegateInstruction], tx),
-    );
-
-    const transaction =
-      await signTransactionMessageWithSigners(transactionMessage);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
+    const messageV0 = new TransactionMessage({
+      payerKey: signer.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: [ix],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(messageV0);
+    tx.sign([signer, delegatedAccountSigner]);
 
     const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      transaction,
+      tx,
       options,
     );
 
-    console.log(`✓ Account delegated: ${delegatedAccount}`);
+    console.log(`✓ Account delegated: ${delegatedAccount.toBase58()}`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
   }
 
-
   async delegate_v1(
-    user: Address,
+    user: PublicKey,
     gridId: number,
-    ownerProgramId: Address,
-    signTransaction: DelegateV1WalletSignTransaction,
+    ownerProgramId: PublicKey,
+    signTransaction: WalletSignTransaction,
     signers: DelegateV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const delegatedAccount = signers.delegatedAccountSigner.address;
+    const delegatedAccount = signers.delegatedAccountSigner.publicKey;
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
-    const delegateInstruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: user, role: 1 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: user, isSigner: true, isWritable: true },
         {
-          address: delegatedAccount,
-          role: AccountRole.WRITABLE_SIGNER,
-          signer: signers.delegatedAccountSigner,
+          pubkey: delegatedAccount,
+          isSigner: true,
+          isWritable: true,
         },
-        { address: ownerProgramId, role: 0 as const },
-        { address: delegationRecordPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeDelegate({ gridId }),
-    };
+      data: Buffer.from(this.portal.encodeDelegate({ gridId })),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
+    const messageV0 = new TransactionMessage({
+      payerKey: user,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: [ix],
+    }).compileToV0Message();
+    let tx = new VersionedTransaction(messageV0);
 
-    const transactionMessageWithoutFeePayer = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([delegateInstruction], tx),
-    );
-
-    // 1) 设置 fee payer 公钥：有本地 fee payer 密钥则用 signer，否则仅 pubkey（由后续钱包 signTransaction 补签）
-    let transactionMessageWithFeePayer: any;
+    const localSigners: Keypair[] = [signers.delegatedAccountSigner];
     if (signers.feePayerSigner) {
-      if (signers.feePayerSigner.address !== user) {
-        throw new Error("signers.feePayerSigner address must match user");
+      if (!signers.feePayerSigner.publicKey.equals(user)) {
+        throw new Error("signers.feePayerSigner must match user (fee payer)");
       }
-      transactionMessageWithFeePayer = setTransactionMessageFeePayerSigner(
-        signers.feePayerSigner,
-        transactionMessageWithoutFeePayer,
-      );
-    } else {
-      transactionMessageWithFeePayer = {
-        ...transactionMessageWithoutFeePayer,
-        feePayer: user,
-      };
+      localSigners.push(signers.feePayerSigner);
     }
+    tx = signVersionedTransaction(tx, localSigners);
 
-    // 2) 用 signers 里嵌入的私钥做部分签名（含 delegated；若有 feePayerSigner 则一并签）
-    const transactionPartiallySigned =
-      await partiallySignTransactionMessageWithSigners(
-        transactionMessageWithFeePayer,
-      );
-
-    // 3) 钱包始终再签一次；无 feePayerSigner 时，该步同时是用户/fee payer 签名
-    const transaction = await signTransaction(transactionPartiallySigned);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
+    tx = await signTransaction(tx);
 
     const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      transaction,
+      tx,
       options,
     );
 
-    console.log(`✓ Account delegated: ${delegatedAccount}`);
+    console.log(`✓ Account delegated: ${delegatedAccount.toBase58()}`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
   }
 
-
-  /**
-   * Deposit fees into a session's fee vault
-   */
   async depositFee(
-    signer: TransactionSigner,
-    sessionOwner: Address,
+    signer: Keypair,
+    sessionOwner: PublicKey,
     gridId: number,
     lamports: number,
     options: TransactionOptions = {},
@@ -685,155 +565,123 @@ export class NorthStarSDK {
       sessionOwner,
     );
 
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
-        { address: sessionPDA, role: 1 as const },
-        { address: depositReceiptPDA, role: 1 as const },
-        { address: sessionOwner, role: 0 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: sessionPDA, isSigner: false, isWritable: true },
+        { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
+        { pubkey: sessionOwner, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
-    };
+      data: Buffer.from(
+        this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
+      ),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
+    const tx = buildAndSignVersionedTransaction(
+      signer,
+      latestBlockhash.blockhash,
+      [ix],
     );
 
-    const transaction =
-      await signTransactionMessageWithSigners(transactionMessage);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
-
     const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      transaction,
+      tx,
       options,
     );
 
-    console.log(`✓ Fee deposited: ${lamports} lamports to ${sessionOwner}`);
+    console.log(`✓ Fee deposited: ${lamports} lamports to ${sessionOwner.toBase58()}`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
   }
 
-  /**
-   * Undelegate an account from Portal
-   */
   async undelegate(
-    signer: TransactionSigner,
-    delegatedAccountSigner: TransactionSigner,
+    signer: Keypair,
+    delegatedAccountSigner: Keypair,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const delegatedAccount = delegatedAccountSigner.address;
+    const delegatedAccount = delegatedAccountSigner.publicKey;
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
 
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
         {
-          address: delegatedAccount,
-          role: AccountRole.WRITABLE_SIGNER,
-          signer: delegatedAccountSigner,
+          pubkey: delegatedAccount,
+          isSigner: true,
+          isWritable: true,
         },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
-        { address: delegationRecordPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeUndelegate(),
-    };
+      data: Buffer.from(this.portal.encodeUndelegate()),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
-    );
-
-    const transaction =
-      await signTransactionMessageWithSigners(transactionMessage);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
+    const messageV0 = new TransactionMessage({
+      payerKey: signer.publicKey,
+      recentBlockhash: latestBlockhash.blockhash,
+      instructions: [ix],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(messageV0);
+    tx.sign([signer, delegatedAccountSigner]);
 
     const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      transaction,
+      tx,
       options,
     );
 
-    console.log(`✓ Account undelegated: ${delegatedAccount}`);
+    console.log(`✓ Account undelegated: ${delegatedAccount.toBase58()}`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
   }
 
-  /**
-   * Close an expired session
-   */
   async closeSession(
-    signer: TransactionSigner,
+    signer: Keypair,
     gridId: number,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA(signer.address, gridId);
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.address);
+    const sessionPDA = await this.portal.deriveSessionPDA(
+      signer.publicKey,
+      gridId,
+    );
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.publicKey);
 
-    const instruction = {
-      version: 0,
-      programAddress: this.portalProgramId,
-      accounts: [
-        { address: signer.address, role: 1 as const },
-        { address: sessionPDA, role: 1 as const },
-        { address: feeVaultPDA, role: 1 as const },
-        { address: SYSTEM_PROGRAM_ID, role: 0 as const },
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: sessionPDA, isSigner: false, isWritable: true },
+        { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: this.portal.encodeCloseSession({ gridId }),
-    };
+      data: Buffer.from(this.portal.encodeCloseSession({ gridId })),
+    });
 
-    const { value: latestBlockhash } = await this.rpc
-      .getLatestBlockhash()
-      .send();
-
-    const transactionMessage = pipe(
-      createTransactionMessage({ version: 0 }),
-      (tx) => setTransactionMessageFeePayerSigner(signer, tx),
-      (tx) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, tx),
-      (tx) => appendTransactionMessageInstructions([instruction], tx),
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
+    const tx = buildAndSignVersionedTransaction(
+      signer,
+      latestBlockhash.blockhash,
+      [ix],
     );
 
-    const transaction =
-      await signTransactionMessageWithSigners(transactionMessage);
-    assertIsSendableTransaction(transaction);
-    assertIsTransactionWithBlockhashLifetime(transaction);
-
     const { signature } = await this.sendAndConfirmTransactionWithoutWebsocket(
-      transaction,
+      tx,
       options,
     );
 
-    console.log(`✓ Session closed: ${sessionPDA}`);
+    console.log(`✓ Session closed: ${sessionPDA.toBase58()}`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
   }
 
-  /**
-   * Check health of all connected services
-   */
   async checkHealth(): Promise<{
     solana: boolean;
     ephemeralRollup: boolean;
@@ -844,7 +692,7 @@ export class NorthStarSDK {
 
     let solanaHealthy = false;
     try {
-      await this.rpc.getSlot().send();
+      await this.rpc.getSlot();
       solanaHealthy = true;
     } catch {
       solanaHealthy = false;
@@ -857,7 +705,13 @@ export class NorthStarSDK {
   }
 }
 
-// Re-export types and Kit utilities for convenience
 export * from "./types";
 export { PortalProgram } from "./programs/portal";
-export { createSolanaRpc } from "@solana/kit";
+export {
+  Connection,
+  Keypair,
+  PublicKey,
+  TransactionInstruction,
+  VersionedTransaction,
+  SystemProgram,
+} from "@solana/web3.js";
