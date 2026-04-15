@@ -40,21 +40,21 @@ export interface DelegateV1Signers {
   feePayerSigner?: Keypair;
 }
 
-/** openSession / closeSession：user 由 signTransaction 签名；可选本地 fee payer。 */
+/** openSession / closeSession: user is signed via signTransaction; optional local fee payer. */
 export interface SessionV1Signers {
   feePayerSigner?: Keypair;
 }
 
-/** depositFee：depositor 与 fee payer；无 depositorSigner 时由钱包签 user。 */
+/** depositFee: depositor and fee payer; if depositorSigner is omitted, the wallet signs user. */
 export interface DepositFeeV1Signers {
   depositorSigner?: Keypair;
   feePayerSigner?: Keypair;
 }
 
-/** undelegate：与 delegate 相同（被委托账户 + 可选 fee payer）。 */
+/** undelegate: same as delegate (delegated account + optional fee payer). */
 export type UndelegateV1Signers = DelegateV1Signers;
 
-/** 钱包对「已本地部分签名」的交易补全签名；无本地 signer 时由该步完成 user 等剩余签名。 */
+/** Wallet completes signatures on a partially locally-signed transaction; without local signers, this step completes user and any remaining signatures. */
 export type WalletSignTransaction = (
   transaction: VersionedTransaction,
 ) => Promise<VersionedTransaction>;
@@ -235,7 +235,7 @@ export class NorthStarSDK {
     return out;
   }
 
-  /** 用 Object.keys 收集 signers 对象中全部已定义的 Keypair（跳过 undefined）。 */
+  /** Collects all defined Keypairs from a signers object via Object.keys (skips undefined). */
   private keypairsFromSignersRecord(signers: object): Keypair[] {
     const rec = signers as Record<string, Keypair | undefined>;
     const out: Keypair[] = [];
@@ -247,7 +247,7 @@ export class NorthStarSDK {
   }
 
   /**
-   * 与 delegate_v1 一致：先本地 signers 部分签名，再 signTransaction（钱包），最后上链确认。
+   * Same flow as delegate_v1: local signers partial-sign first, then signTransaction (wallet), then on-chain confirmation.
    */
   private async sendTxV1(
     payerKey: PublicKey,
@@ -488,12 +488,6 @@ export class NorthStarSDK {
     });
 
     const feePayer = signers.feePayerSigner?.publicKey ?? user;
-    if (
-      signers.feePayerSigner &&
-      !signers.feePayerSigner.publicKey.equals(feePayer)
-    ) {
-      throw new Error("signers.feePayerSigner must match fee payer pubkey");
-    }
 
     const localSigners = this.keypairsFromSignersRecord(signers);
 
@@ -557,7 +551,7 @@ export class NorthStarSDK {
     return { signature };
   }
 
-  /** @deprecated 同 {@link delegate}，保留别名便于兼容旧调用。 */
+  /** @deprecated Same as {@link delegate}; kept as an alias for backward compatibility. */
   async delegate_v1(
     user: PublicKey,
     gridId: number,
@@ -599,18 +593,7 @@ export class NorthStarSDK {
     });
 
     const feePayer = signers.feePayerSigner?.publicKey ?? user;
-    if (
-      signers.depositorSigner &&
-      !signers.depositorSigner.publicKey.equals(user)
-    ) {
-      throw new Error("signers.depositorSigner.publicKey must equal user");
-    }
-    if (
-      signers.feePayerSigner &&
-      !signers.feePayerSigner.publicKey.equals(feePayer)
-    ) {
-      throw new Error("signers.feePayerSigner must match fee payer pubkey");
-    }
+
 
     const localSigners = this.keypairsFromSignersRecord(signers);
 

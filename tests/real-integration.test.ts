@@ -33,7 +33,7 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 模拟网页钱包：在本地用给定 Keypair 补全尚未签名的账户（与 delegate / undelegate 等配合）。 */
+/** Mimics a web wallet: completes missing signatures locally with the given keypairs (for delegate / undelegate, etc.). */
 function walletSignLocal(...keypairs: Keypair[]) {
   return async (tx: VersionedTransaction) =>
     signVersionedTransaction(tx, keypairs);
@@ -316,7 +316,7 @@ describe("Real Integration Tests", () => {
       portalUser.publicKey,
       gridId,
       500_000,
-      async (tx) => tx,
+      walletSignLocal(portalUser),
       { depositorSigner: portalUser },
       {
         commitment: "confirmed",
