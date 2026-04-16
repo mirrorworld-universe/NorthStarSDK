@@ -61,7 +61,9 @@ export type WalletSignTransaction = (
 
 const SYSTEM_PROGRAM_ID = SystemProgram.programId;
 
-export function encodeSystemProgramAssignData(newProgramOwner: PublicKey): Uint8Array {
+export function encodeSystemProgramAssignData(
+  newProgramOwner: PublicKey,
+): Uint8Array {
   const data = new Uint8Array(4 + 32);
   new DataView(data.buffer).setUint32(0, 1, true);
   data.set(newProgramOwner.toBuffer(), 4);
@@ -261,7 +263,7 @@ export class NorthStarSDK {
       payerKey,
       recentBlockhash: latestBlockhash.blockhash,
       instructions,
-    }).compileToV0Message();
+    }).compileToLegacyMessage();
     let tx = new VersionedTransaction(messageV0);
     tx = signVersionedTransaction(tx, this.dedupeSigners(localSigners));
     tx = await signTransaction(tx);
@@ -560,7 +562,14 @@ export class NorthStarSDK {
     signers: DelegateV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    return this.delegate(user, gridId, ownerProgramId, signTransaction, signers, options);
+    return this.delegate(
+      user,
+      gridId,
+      ownerProgramId,
+      signTransaction,
+      signers,
+      options,
+    );
   }
 
   async depositFee(
@@ -594,7 +603,6 @@ export class NorthStarSDK {
 
     const feePayer = signers.feePayerSigner?.publicKey ?? user;
 
-
     const localSigners = this.keypairsFromSignersRecord(signers);
 
     const { signature } = await this.sendTxV1(
@@ -605,7 +613,9 @@ export class NorthStarSDK {
       options,
     );
 
-    console.log(`✓ Fee deposited: ${lamports} lamports to ${sessionOwner.toBase58()}`);
+    console.log(
+      `✓ Fee deposited: ${lamports} lamports to ${sessionOwner.toBase58()}`,
+    );
     console.log(`  Signature: ${signature}`);
 
     return { signature };

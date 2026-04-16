@@ -25,7 +25,9 @@ describe("North Star SDK Integration Tests", () => {
       },
     });
 
-    jest.spyOn(sdk.getRpc(), "getLatestBlockhash").mockResolvedValue(MOCK_LATEST_BLOCKHASH);
+    jest
+      .spyOn(sdk.getRpc(), "getLatestBlockhash")
+      .mockResolvedValue(MOCK_LATEST_BLOCKHASH);
     jest.spyOn(sdk.getRpc(), "getAccountInfo").mockResolvedValue({
       data: Buffer.from([1, 2, 3]),
       executable: false,
@@ -187,7 +189,9 @@ describe("North Star SDK Integration Tests", () => {
 
       expect(keys.length).toBe(5);
       expect(keys[0].pubkey.equals(ownerSigner.publicKey)).toBe(true);
-      expect(keys[1].pubkey.equals(delegatedAccountSigner.publicKey)).toBe(true);
+      expect(keys[1].pubkey.equals(delegatedAccountSigner.publicKey)).toBe(
+        true,
+      );
       expect(keys[2].pubkey.equals(SystemProgram.programId)).toBe(true);
     });
 

@@ -3,7 +3,6 @@
  * Provides transaction instruction structures for Portal operations
  */
 
-
 import { deserialize, field, serialize, variant } from "@dao-xyz/borsh";
 import { PublicKey } from "@solana/web3.js";
 import { toU64LE, readU64LE, readU128LE } from "../utils/common";
@@ -91,7 +90,7 @@ class DelegateInstruction {
 }
 
 @variant(4)
-class UndelegateInstruction { }
+class UndelegateInstruction {}
 
 /**
  * Session state account
@@ -169,8 +168,6 @@ function assertAccountDataLength(
   }
 }
 
-
-
 export class PortalProgram {
   private readonly defaultProgramId: PublicKey;
 
@@ -190,7 +187,9 @@ export class PortalProgram {
     return PortalProgram.deriveFeeVaultPDA(owner, this.defaultProgramId);
   }
 
-  async deriveDelegationRecordPDA(delegatedAccount: PublicKey): Promise<PublicKey> {
+  async deriveDelegationRecordPDA(
+    delegatedAccount: PublicKey,
+  ): Promise<PublicKey> {
     return PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
       this.defaultProgramId,
@@ -254,11 +253,7 @@ export class PortalProgram {
     programId: PublicKey,
   ): Promise<PublicKey> {
     const [pda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("session", "utf8"),
-        owner.toBuffer(),
-        toU64LE(gridId),
-      ],
+      [Buffer.from("session", "utf8"), owner.toBuffer(), toU64LE(gridId)],
       programId,
     );
     return pda;

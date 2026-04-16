@@ -4,11 +4,7 @@ export function toU64LE(value: number | bigint): Uint8Array {
     throw new RangeError("u64 overflow");
   }
   const out = new ArrayBuffer(8);
-  new DataView(out).setBigUint64(
-    0,
-    v,
-    true,
-  );
+  new DataView(out).setBigUint64(0, v, true);
   return new Uint8Array(out);
 }
 
@@ -23,20 +19,20 @@ export function readU128LE(data: Uint8Array, offset: number): bigint {
   return low | (high << 64n);
 }
 
- /**
-* Convert number to little-endian bytes for PDA seeds
-*/
+/**
+ * Convert number to little-endian bytes for PDA seeds
+ */
 export function numberToLE(num: bigint, bytes: number): Uint8Array {
   if (num < 0n) {
     throw "number is negative";
   }
- let arr = new Uint8Array(bytes);
- for (let i = 0; i < bytes; i++) {
-   arr[i] = Number(num & 0xffn);
-   num = num >> 8n;
- }
- if (num != 0n) {
-   throw new Error("Number to LE conversion failed");
- }
- return arr;
+  let arr = new Uint8Array(bytes);
+  for (let i = 0; i < bytes; i++) {
+    arr[i] = Number(num & 0xffn);
+    num = num >> 8n;
+  }
+  if (num != 0n) {
+    throw new Error("Number to LE conversion failed");
+  }
+  return arr;
 }
