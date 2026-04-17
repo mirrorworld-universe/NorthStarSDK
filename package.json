@@ -6,8 +6,10 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --project tsconfig.examples.json --noEmit",
     "test": "jest --testPathIgnorePatterns=real-integration.test.ts",
-    "test:integration": "jest --runTestsByPath tests/real-integration.test.ts --testTimeout=300000"
+    "test:integration": "jest --runTestsByPath tests/real-integration.test.ts --testTimeout=300000",
+    "demo:live-price-feed": "ts-node --project tsconfig.examples.json examples/live-price-feed/server.ts"
   },
   "keywords": [
     "solana",
@@ -18,6 +20,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@coral-xyz/anchor": "^0.29.0",
     "@dao-xyz/borsh": "^6.0.1",
     "@solana/web3.js": "^1.98.4",
     "axios": "^1.6.2",
