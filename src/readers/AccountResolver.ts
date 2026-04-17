@@ -32,9 +32,12 @@ export class AccountResolver {
   ): Promise<AccountInfo> {
     if (search_source === "ephemeral") {
       try {
-        const account = await this.ephemeralRollupReader.getAccountInfo(address);
+        const account =
+          await this.ephemeralRollupReader.getAccountInfo(address);
         if (account) {
-          console.log(`✓ Account resolved from Ephemeral Rollup: ${address.toBase58()}`);
+          console.log(
+            `✓ Account resolved from Ephemeral Rollup: ${address.toBase58()}`,
+          );
           return account;
         }
       } catch (error) {
@@ -64,7 +67,9 @@ export class AccountResolver {
         };
       } catch (error) {
         console.error("All read sources failed:", error);
-        throw new Error(`Failed to resolve account ${address.toBase58()} from any source`);
+        throw new Error(
+          `Failed to resolve account ${address.toBase58()} from any source`,
+        );
       }
     }
 

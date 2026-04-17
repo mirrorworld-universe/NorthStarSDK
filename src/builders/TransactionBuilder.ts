@@ -20,10 +20,7 @@ export class TransactionBuilder {
     "11111111111111111111111111111111",
   );
 
-  constructor(
-    connection: Connection,
-    portalProgramId: PublicKey,
-  ) {
+  constructor(connection: Connection, portalProgramId: PublicKey) {
     this.connection = connection;
     this.portalProgramId = portalProgramId;
   }

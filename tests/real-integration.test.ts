@@ -48,8 +48,9 @@ function accountDataToBytes(data: any): Uint8Array {
   throw new Error("Invalid account data");
 }
 
-const EPHEMERAL_ROLLUP_RPC = "https://ephemeral.devnet.sonic.game";
-const VALIDATOR_RPC = "https://api.devnet.sonic.game";
+const EPHEMERAL_ROLLUP_RPC =
+  process.env.EPHEMERAL_ROLLUP_RPC || "http://127.0.0.1:8910";
+const VALIDATOR_RPC = process.env.VALIDATOR_RPC || "http://127.0.0.1:8899";
 
 function getPortalProgramId(): PublicKey {
   const raw = process.env.PORTAL_PROGRAM_ID!.trim();
@@ -58,12 +59,10 @@ function getPortalProgramId(): PublicKey {
 
 const PORTAL_PROGRAM_ID = getPortalProgramId();
 
-async function loadFundingSignerFromEnv(): Promise<Keypair> {
+async function loadFundingSignerFromEnv(): Promise<Keypair | null> {
   const secret = process.env.TRANSFER_SOURCE_PRIVATE_KEY?.trim();
-  if (!secret) {
-    throw new Error(
-      "TRANSFER_SOURCE_PRIVATE_KEY is required in .env (base58-encoded 32-byte seed or 64-byte keypair).",
-    );
+  if (!secret || secret === "dummy") {
+    return null; // Use airdrop instead
   }
   const bytes = Uint8Array.from(bs58.decode(secret));
   if (bytes.length === 64) {
@@ -78,6 +77,16 @@ async function loadFundingSignerFromEnv(): Promise<Keypair> {
 }
 
 type SolanaConnection = ReturnType<NorthStarSDK["getRpc"]>;
+
+async function fundViaAirdrop(
+  sdk: NorthStarSDK,
+  connection: SolanaConnection,
+  to: PublicKey,
+  lamports: number,
+): Promise<void> {
+  const sig = await connection.requestAirdrop(to, lamports);
+  await sdk.confirmSignature(sig, { commitment: "confirmed" });
+}
 
 async function transferLamportsFromFunding(
   sdk: NorthStarSDK,
@@ -96,7 +105,7 @@ async function transferLamportsFromFunding(
     payerKey: fundingSigner.publicKey,
     recentBlockhash: blockhash,
     instructions: [ix],
-  }).compileToV0Message();
+  }).compileToLegacyMessage();
   const tx = new VersionedTransaction(messageV0);
   tx.sign([fundingSigner]);
 
@@ -131,7 +140,7 @@ async function assignAccountOwnerAndConfirm(
     payerKey: feePayerSigner.publicKey,
     recentBlockhash: blockhash,
     instructions: [ix],
-  }).compileToV0Message();
+  }).compileToLegacyMessage();
   const tx = new VersionedTransaction(messageV0);
   tx.sign([feePayerSigner, accountSigner]);
 
@@ -170,39 +179,41 @@ describe("Real Integration Tests", () => {
 
     try {
       const fundingSigner = await loadFundingSignerFromEnv();
-      console.log(
-        "Funding transfers from",
-        fundingSigner.publicKey.toBase58(),
-        "(override with TRANSFER_SOURCE_ADDRESS)",
-      );
 
-      await transferLamportsFromFunding(
-        sdk,
-        rpc,
-        fundingSigner,
-        portalUser.publicKey,
-        200_000_000n,
-      );
-      console.log("✓ Transferred 2 SOL to portal owner");
+      if (fundingSigner) {
+        console.log(
+          "Funding transfers from",
+          fundingSigner.publicKey.toBase58(),
+        );
+        await transferLamportsFromFunding(
+          sdk,
+          rpc,
+          fundingSigner,
+          portalUser.publicKey,
+          200_000_000n,
+        );
+        await transferLamportsFromFunding(
+          sdk,
+          rpc,
+          fundingSigner,
+          delegatedAccount.publicKey,
+          100_000_000n,
+        );
+        await transferLamportsFromFunding(
+          sdk,
+          rpc,
+          fundingSigner,
+          closeSessionOwner.publicKey,
+          200_000_000n,
+        );
+      } else {
+        console.log("Using airdrop for funding");
+        await fundViaAirdrop(sdk, rpc, portalUser.publicKey, 2_000_000_000);
+        await fundViaAirdrop(sdk, rpc, delegatedAccount.publicKey, 1_000_000_000);
+        await fundViaAirdrop(sdk, rpc, closeSessionOwner.publicKey, 2_000_000_000);
+      }
 
-      await transferLamportsFromFunding(
-        sdk,
-        rpc,
-        fundingSigner,
-        delegatedAccount.publicKey,
-        100_000_000n,
-      );
-      console.log("✓ Transferred 1 SOL to delegated account");
-
-      await transferLamportsFromFunding(
-        sdk,
-        rpc,
-        fundingSigner,
-        closeSessionOwner.publicKey,
-        200_000_000n,
-      );
-      console.log("✓ Transferred 2 SOL to close-session owner");
-
+      console.log("✓ All accounts funded");
       await sleep(500);
 
       const balance = await rpc.getBalance(portalUser.publicKey);
@@ -211,15 +222,20 @@ describe("Real Integration Tests", () => {
       const delegatedBalance = await rpc.getBalance(delegatedAccount.publicKey);
       console.log("Delegated account balance:", delegatedBalance);
     } catch (e: any) {
-      console.log("⚠ Funding transfer failed:", String(e));
+      console.log("⚠ Funding failed:", String(e));
       throw e;
     }
   }, 60000);
 
   test("Step 1: Open Session - should create session and fee vault accounts", async () => {
     console.log("\n=== Step 1: Open Session ===");
-    const sessionPDA = await sdk.portal.deriveSessionPDA(portalUser.publicKey, gridId);
-    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(portalUser.publicKey);
+    const sessionPDA = await sdk.portal.deriveSessionPDA(
+      portalUser.publicKey,
+      gridId,
+    );
+    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(
+      portalUser.publicKey,
+    );
 
     const { signature } = await sdk.openSession(
       portalUser.publicKey,
@@ -254,55 +270,58 @@ describe("Real Integration Tests", () => {
     console.log("✓ FeeVault account exists on-chain");
   }, 60000);
 
-  test(
-    "Step 2: Delegate Account - should create delegation record",
-    async () => {
-      console.log("\n=== Step 2: Delegate Account ===");
-      const delegationRecordPDA =
-        await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.publicKey);
+  test("Step 2: Delegate Account - should create delegation record", async () => {
+    console.log("\n=== Step 2: Delegate Account ===");
+    const delegationRecordPDA = await sdk.portal.deriveDelegationRecordPDA(
+      delegatedAccount.publicKey,
+    );
 
-      console.log("Delegated account (keypair):", delegatedAccount.publicKey.toBase58());
-      console.log("Delegation record PDA:", delegationRecordPDA.toBase58());
+    console.log(
+      "Delegated account (keypair):",
+      delegatedAccount.publicKey.toBase58(),
+    );
+    console.log("Delegation record PDA:", delegationRecordPDA.toBase58());
 
-      await assignAccountOwnerAndConfirm(
-        sdk,
-        rpc,
-        portalUser,
-        delegatedAccount,
-        SYSTEM_PROGRAM_ID,
-        PORTAL_PROGRAM_ID,
-      );
-      console.log("✓ Assign executed and confirmed");
+    await assignAccountOwnerAndConfirm(
+      sdk,
+      rpc,
+      portalUser,
+      delegatedAccount,
+      SYSTEM_PROGRAM_ID,
+      PORTAL_PROGRAM_ID,
+    );
+    console.log("✓ Assign executed and confirmed");
 
-      const { signature } = await sdk.delegate(
-        portalUser.publicKey,
-        gridId,
-        SYSTEM_PROGRAM_ID,
-        walletSignLocal(portalUser),
-        { delegatedAccountSigner: delegatedAccount },
-        {
-          commitment: "confirmed",
-          skipPreflight: skipPreflight,
-        },
-      );
-      console.log("Signature:", signature);
-      console.log("✓ Delegation created");
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    const { signature } = await sdk.delegate(
+      portalUser.publicKey,
+      gridId,
+      SYSTEM_PROGRAM_ID,
+      walletSignLocal(portalUser),
+      { delegatedAccountSigner: delegatedAccount },
+      {
+        commitment: "confirmed",
+        skipPreflight: skipPreflight,
+      },
+    );
+    console.log("Signature:", signature);
+    console.log("✓ Delegation created");
+    await new Promise((resolve) => setTimeout(resolve, 2000));
 
-      let delegationInfo = await rpc.getAccountInfo(delegationRecordPDA);
+    let delegationInfo = await rpc.getAccountInfo(delegationRecordPDA);
 
-      console.log("Delegation info:", delegationInfo);
-      expect(delegationInfo != null).toBe(true);
-      expect(delegationInfo).not.toBeNull();
-      console.log("✓ Delegation record exists on-chain");
-    },
-    60000,
-  );
+    console.log("Delegation info:", delegationInfo);
+    expect(delegationInfo != null).toBe(true);
+    expect(delegationInfo).not.toBeNull();
+    console.log("✓ Delegation record exists on-chain");
+  }, 60000);
 
   test("Step 3: Deposit Fee - should create or top up deposit receipt", async () => {
     console.log("\n=== Step 3: Deposit Fee ===");
 
-    const sessionPDA = await sdk.portal.deriveSessionPDA(portalUser.publicKey, gridId);
+    const sessionPDA = await sdk.portal.deriveSessionPDA(
+      portalUser.publicKey,
+      gridId,
+    );
 
     console.log("Session PDA:", sessionPDA.toBase58());
 
@@ -338,8 +357,9 @@ describe("Real Integration Tests", () => {
   test("Step 4: Undelegate - should assign account back and clear delegation record", async () => {
     console.log("\n=== Step 4: Undelegate ===");
 
-    const delegationRecordPDA =
-      await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.publicKey);
+    const delegationRecordPDA = await sdk.portal.deriveDelegationRecordPDA(
+      delegatedAccount.publicKey,
+    );
 
     await sdk.undelegate(
       portalUser.publicKey,
@@ -374,7 +394,9 @@ describe("Real Integration Tests", () => {
       closeSessionOwner.publicKey,
       closeGridId,
     );
-    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(closeSessionOwner.publicKey);
+    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(
+      closeSessionOwner.publicKey,
+    );
 
     await sdk.openSession(
       closeSessionOwner.publicKey,
@@ -399,7 +421,11 @@ describe("Real Integration Tests", () => {
     console.log("Session state:", sessionState);
     const expireAfter = sessionState.createdAt + sessionState.ttlSlots + 1n;
 
-    console.log("Waiting until slot >", expireAfter.toString(), "(session expiry)...");
+    console.log(
+      "Waiting until slot >",
+      expireAfter.toString(),
+      "(session expiry)...",
+    );
     const maxWaitMs = 120_000;
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {

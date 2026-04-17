@@ -13,13 +13,13 @@ import {
 } from "@solana/web3.js";
 import bs58 from "bs58";
 
-export function toPublicKey(
-  key: PublicKey | string,
-): PublicKey {
+export function toPublicKey(key: PublicKey | string): PublicKey {
   return key instanceof PublicKey ? key : new PublicKey(key);
 }
 
-export function getVersionedTxSignatureBase58(tx: VersionedTransaction): string {
+export function getVersionedTxSignatureBase58(
+  tx: VersionedTransaction,
+): string {
   const sig = tx.signatures[0];
   if (!sig) {
     throw new Error("Transaction has no signature");

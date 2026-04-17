@@ -11,11 +11,7 @@ export async function deriveSessionPDA(
   portalProgramId: PublicKey,
 ): Promise<PublicKey> {
   const [pda] = PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("session", "utf8"),
-      owner.toBuffer(),
-      toU64LE(gridId),
-    ],
+    [Buffer.from("session", "utf8"), owner.toBuffer(), toU64LE(gridId)],
     portalProgramId,
   );
   return pda;
