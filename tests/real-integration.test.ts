@@ -49,7 +49,7 @@ function accountDataToBytes(data: any): Uint8Array {
 }
 
 const EPHEMERAL_ROLLUP_RPC = "https://ephemeral.devnet.sonic.game";
-const VALIDATOR_RPC = "https://api.devnet.sonic.game";
+const VALIDATOR_RPC = "https://api.devnet.solana.com";
 
 function getPortalProgramId(): PublicKey {
   const raw = process.env.PORTAL_PROGRAM_ID!.trim();
@@ -159,14 +159,6 @@ describe("Real Integration Tests", () => {
     });
     rpc = sdk.getRpc();
 
-    portalUser = Keypair.generate();
-    delegatedAccount = Keypair.generate();
-    closeSessionOwner = Keypair.generate();
-
-    console.log("\n=== Test Setup ===");
-    console.log("Portal owner:", portalUser.publicKey.toBase58());
-    console.log("Delegated account:", delegatedAccount.publicKey.toBase58());
-    console.log("Close-session owner:", closeSessionOwner.publicKey.toBase58());
 
     try {
       const fundingSigner = await loadFundingSignerFromEnv();
@@ -176,14 +168,27 @@ describe("Real Integration Tests", () => {
         "(override with TRANSFER_SOURCE_ADDRESS)",
       );
 
-      await transferLamportsFromFunding(
-        sdk,
-        rpc,
-        fundingSigner,
-        portalUser.publicKey,
-        200_000_000n,
-      );
-      console.log("✓ Transferred 2 SOL to portal owner");
+
+    portalUser = fundingSigner;
+    // portalUser = Keypair.generate();
+    delegatedAccount = Keypair.generate();
+    closeSessionOwner = Keypair.generate();
+
+    console.log("\n=== Test Setup ===");
+    console.log("Portal owner:", portalUser.publicKey.toBase58());
+    console.log("Delegated account:", delegatedAccount.publicKey.toBase58());
+    console.log("Close-session owner:", closeSessionOwner.publicKey.toBase58());
+
+    
+
+      // await transferLamportsFromFunding(
+      //   sdk,
+      //   rpc,
+      //   fundingSigner,
+      //   portalUser.publicKey,
+      //   200_000_000n,
+      // );
+      // console.log("✓ Transferred 2 SOL to portal owner");
 
       await transferLamportsFromFunding(
         sdk,
@@ -220,26 +225,61 @@ describe("Real Integration Tests", () => {
     console.log("\n=== Step 1: Open Session ===");
     const sessionPDA = await sdk.portal.deriveSessionPDA(portalUser.publicKey, gridId);
     const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(portalUser.publicKey);
+    let sessionInfo = await rpc.getAccountInfo(sessionPDA);
 
-    const { signature } = await sdk.openSession(
-      portalUser.publicKey,
-      gridId,
-      2000,
-      1_000_000,
-      walletSignLocal(portalUser),
-      {},
-      {
-        commitment: "confirmed",
-        skipPreflight: skipPreflight,
-      },
-    );
+    let expireAfter = 0n;
+    let should_create_session = true;
 
-    console.log("✓ Session opened");
-    console.log("  Signature:", signature);
+    if(sessionInfo) {
+      const sessRaw = accountDataToBytes(sessionInfo!.data);
+      const sessionState = sdk.portal.parseSession(sessRaw);
+      expireAfter = sessionState.createdAt + sessionState.ttlSlots + 1n;
+    }
+    
+   
+    if(sessionInfo) {
+      should_create_session = false
+      console.log("sessionInfo found");
+      const slotNow = BigInt(await rpc.getSlot("confirmed"));
+      if(slotNow > expireAfter) {
+        console.log("expiredsessionInfo found, closing session");
+        await sdk.closeSession(
+          portalUser.publicKey,
+          gridId,
+          walletSignLocal(portalUser),
+          {},
+          {
+            commitment: "confirmed",
+            skipPreflight: skipPreflight,
+          },
+        );
+        console.log("✓ Session closed");
+        should_create_session = true;
+      }
+    }
+
+    await sleep(1000);
+   
+    if(should_create_session) {
+      const { signature } = await sdk.openSession(
+        portalUser.publicKey,
+        gridId,
+        2000,
+        1_000_000,
+        walletSignLocal(portalUser),
+        {},
+        {
+          commitment: "confirmed",
+          skipPreflight: skipPreflight,
+        },
+      );
+      console.log("✓ Session opened");
+      console.log("  Signature:", signature);
+    }
 
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
-    let sessionInfo = await rpc.getAccountInfo(sessionPDA);
+
 
     console.log("Session info:", sessionInfo);
     expect(sessionInfo != null).toBe(true);
@@ -253,6 +293,7 @@ describe("Real Integration Tests", () => {
     expect(feeVaultInfo).not.toBeNull();
     console.log("✓ FeeVault account exists on-chain");
   }, 60000);
+
 
   test(
     "Step 2: Delegate Account - should create delegation record",
@@ -299,6 +340,7 @@ describe("Real Integration Tests", () => {
     60000,
   );
 
+
   test("Step 3: Deposit Fee - should create or top up deposit receipt", async () => {
     console.log("\n=== Step 3: Deposit Fee ===");
 
@@ -315,7 +357,7 @@ describe("Real Integration Tests", () => {
       portalUser.publicKey,
       portalUser.publicKey,
       gridId,
-      500_000,
+      4_000_000,
       walletSignLocal(portalUser),
       { depositorSigner: portalUser },
       {
@@ -334,6 +376,7 @@ describe("Real Integration Tests", () => {
     expect(receiptState.balance).toBeGreaterThanOrEqual(500_000n);
     console.log("✓ Deposit receipt balance:", receiptState.balance.toString());
   }, 60000);
+
 
   test("Step 4: Undelegate - should assign account back and clear delegation record", async () => {
     console.log("\n=== Step 4: Undelegate ===");

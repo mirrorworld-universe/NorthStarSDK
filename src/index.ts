@@ -265,6 +265,8 @@ export class NorthStarSDK {
     let tx = new VersionedTransaction(messageV0);
     tx = signVersionedTransaction(tx, this.dedupeSigners(localSigners));
     tx = await signTransaction(tx);
+    const signature = getVersionedTxSignatureBase58(tx);
+    console.log(`sending tx with signature: ${signature}`);
     return this.sendAndConfirmTransactionWithoutWebsocket(tx, options);
   }
 
