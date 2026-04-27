@@ -1,6 +1,6 @@
 {
   "name": "north-star-sdk",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "description": "SDK for interacting with Ephemeral Rollups and constructing Portal transactions on Solana",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

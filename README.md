@@ -228,7 +228,9 @@ await sdk.depositFee(
 ### `delegate`
 
 将 **已由 Portal 程序拥有的账户** 委托到指定 grid（指令数据含 `gridId`）。  
-参数 **`ownerProgramId`** 为被委托账户的 **当前 owner 程序**（常见流程：先把账户 assign 给 Portal，delegate 时传入 System Program 等，以你的链上约定为准）。
+参数 **`ownerProgramId`** 为 **undelegate 时账户应归还的 owner 程序**，同时也是 Portal 内部 buffer 账户的 owner（常见流程：先把账户 assign 给 Portal，再 delegate 并指定 `ownerProgramId`）。
+
+SDK 会自动生成一个 0 字节的 buffer Keypair 并预置 `system::createAccount`（owner=`ownerProgramId`），以满足合并后的 Portal::Delegate 强制要求 buffer 账户的约定（参见 northstar#59）。
 
 ```typescript
 await sdk.delegate(
@@ -252,11 +254,12 @@ await sdk.delegate(
 
 ### `undelegate`
 
-撤销委托。
+撤销委托并把账户归还给 `ownerProgramId`。
 
 ```typescript
 await sdk.undelegate(
   user,
+  ownerProgramId,          // 必须等于 delegate 时传入的同一个 owner 程序
   signTransaction,
   signers,                 // 同 DelegateV1Signers
   options?,
@@ -278,8 +281,8 @@ await sdk.undelegate(
 | `buildOpenSession(signer, gridId, ttlSlots?, feeCap?)` | `{ instructions, feePayer, blockhash, lastValidBlockHeight }` |
 | `buildCloseSession(signer, gridId)` | 同上 |
 | `buildDepositFee(signer, sessionOwner, gridId, lamports)` | 同上 |
-| `buildDelegate(signer, delegatedAccount, gridId)` | 同上（**注意**：与 `delegate()` 的账户列表不完全相同，`build*` 系列面向另一种账户布局，使用前请对照 `src/index.ts` 与链上 IDL） |
-| `buildUndelegate(signer, delegatedAccount)` | 同上 |
+| `buildDelegate(signer, delegatedAccount, gridId, ownerProgramId)` | 返回额外字段 `buffer: Keypair`；交易签名时必须把 `buffer` 与 `signer`、`delegatedAccount` 一并加入签名集。 |
+| `buildUndelegate(signer, delegatedAccount, ownerProgramId)` | 同上 |
 
 其中 `instructions` 为 `TransactionInstruction[]`，`feePayer` 为 `signer.publicKey`。
 
