@@ -19,6 +19,12 @@ import {
   toPublicKey,
 } from "./solana/kitCompat";
 
+export {
+  getVersionedTxSignatureBase58,
+  signVersionedTransaction,
+  toPublicKey,
+} from "./solana/kitCompat";
+
 /** @solana/web3.js Keypair used wherever a transaction signer is required. */
 export type TransactionSigner = Keypair;
 export type { Address };
@@ -501,7 +507,7 @@ export class NorthStarSDK {
       options,
     );
 
-    console.log(`✓ Session opened: ${sessionPDA.toBase58()}`);
+    console.log(`✓ Session opened, sessionPDA: ${sessionPDA.toBase58()}`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
