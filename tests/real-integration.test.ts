@@ -273,9 +273,11 @@ describe("Real Integration Tests", () => {
           skipPreflight: skipPreflight,
         },
       );
-      console.log("✓ Session opened");
+      console.log("✓ Session created");
       console.log("  Signature:", signature);
     }
+
+    sessionInfo = await rpc.getAccountInfo(sessionPDA);
 
     await new Promise((resolve) => setTimeout(resolve, 2000));
 
@@ -283,7 +285,7 @@ describe("Real Integration Tests", () => {
 
     console.log("Session info:", sessionInfo);
     expect(sessionInfo != null).toBe(true);
-    expect(sessionInfo).not.toBeNull();
+    // expect(sessionInfo).not.toBeNull();
     console.log("✓ Session account exists on-chain");
 
     let feeVaultInfo = await rpc.getAccountInfo(feeVaultPDA);
