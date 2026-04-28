@@ -388,6 +388,7 @@ describe("Real Integration Tests", () => {
 
     await sdk.undelegate(
       portalUser.publicKey,
+      SYSTEM_PROGRAM_ID,
       walletSignLocal(portalUser),
       { delegatedAccountSigner: delegatedAccount },
       {
