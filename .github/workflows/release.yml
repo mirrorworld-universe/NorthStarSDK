@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    branches:
-      - release
+    tags:
+      - 'v*'
 
 jobs:
   release:
@@ -15,21 +15,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify tag is on release branch
+        run: |
+          git fetch origin release
+          if ! git branch -a --contains ${{ github.ref_name }} | grep -q "remotes/origin/release"; then
+            echo "Tag ${{ github.ref_name }} is not on the release branch. Skipping release."
+            exit 1
+          fi
+          echo "Tag ${{ github.ref_name }} is on release branch. Proceeding with release."
+
       - name: Get version from tag
         id: get_version
         run: |
-          TAG=$(git describe --tags --exact-match 2>/dev/null || true)
-          if [ -z "$TAG" ]; then
-            echo "No tag found on this commit. Skipping release."
-            exit 0
-          fi
+          TAG=${{ github.ref_name }}
           VERSION=${TAG#v}
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Found tag: $TAG, version: $VERSION"
 
       - name: Setup Node.js
-        if: steps.get_version.outputs.version != ''
         uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -37,21 +41,17 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
-        if: steps.get_version.outputs.version != ''
         run: yarn install --frozen-lockfile
 
       - name: Update version
-        if: steps.get_version.outputs.version != ''
         run: |
           jq '.version = "${{ steps.get_version.outputs.version }}"' package.json > package.json.tmp
           mv package.json.tmp package.json
 
       - name: Build
-        if: steps.get_version.outputs.version != ''
         run: yarn build
 
       - name: Publish to npm
-        if: steps.get_version.outputs.version != ''
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
