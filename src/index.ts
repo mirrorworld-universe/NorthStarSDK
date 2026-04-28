@@ -324,6 +324,7 @@ export class NorthStarSDK {
     signer: Keypair,
     delegatedAccount: PublicKey,
     gridId: number,
+    ownerProgramId: PublicKey,
   ): Promise<{
     instructions: TransactionInstruction[];
     feePayer: PublicKey;
@@ -337,8 +338,8 @@ export class NorthStarSDK {
       programId: this.portalProgramId,
       keys: [
         { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: delegatedAccount, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
+        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
         { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
@@ -412,7 +413,7 @@ export class NorthStarSDK {
       programId: this.portalProgramId,
       keys: [
         { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: delegatedAccount, isSigner: false, isWritable: true },
+        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
