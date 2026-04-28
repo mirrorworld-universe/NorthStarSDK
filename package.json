@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "jest --testPathIgnorePatterns=real-integration.test.ts",
+    "test": "jest --testPathIgnorePatterns=real-integration.test.ts --passWithNoTests",
     "test:integration": "jest --runTestsByPath tests/real-integration.test.ts --testTimeout=300000"
   },
   "keywords": [
