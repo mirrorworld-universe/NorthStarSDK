@@ -19,7 +19,7 @@ npm run build
 ```json
 {
   "dependencies": {
-    "north-star-sdk": "file:../NorthStarSDK"
+    "northstar-sdk": "file:../NorthStarSDK"
   }
 }
 ```
@@ -31,7 +31,7 @@ npm run build
 ### 1. 配置 `NorthStarConfig`
 
 ```typescript
-import { NorthStarSDK, PublicKey } from "north-star-sdk";
+import { NorthStarSDK, PublicKey } from "northstar-sdk";
 
 const sdk = new NorthStarSDK({
   portalProgramId: new PublicKey("你的Portal程序ID"),
@@ -75,7 +75,7 @@ import {
   signVersionedTransaction,
   VersionedTransaction,
   Keypair,
-} from "north-star-sdk";
+} from "northstar-sdk";
 
 function walletSignLocal(...keypairs: Keypair[]) {
   return async (tx: VersionedTransaction) =>
