@@ -5,7 +5,12 @@
 
 import { PublicKey } from "@solana/web3.js";
 import axios, { AxiosInstance } from "axios";
-import { AccountInfo, EphemeralRollupAccountResponse } from "../types";
+import {
+  AccountInfo,
+  EphemeralRollupAccountResponse,
+  NorthStarSyncStatus,
+  NorthStarSyncStatusResponse,
+} from "../types";
 
 export class EphemeralRollupReader {
   private client: AxiosInstance;
@@ -112,6 +117,24 @@ export class EphemeralRollupReader {
       );
       return addresses.map(() => null);
     }
+  }
+
+  /**
+   * Read NorthStar L1 sync status from the ER RPC.
+   */
+  async getSyncStatus(): Promise<NorthStarSyncStatus> {
+    const response = await this.client.post<NorthStarSyncStatusResponse>("", {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "northstarSysGetSyncStatus",
+    });
+
+    const result = response.data.result;
+    return {
+      isSyncing: result.isSyncing,
+      latestSyncedSlot: BigInt(result.latestSyncedSlot),
+      latestL1Slot: BigInt(result.latestL1Slot),
+    };
   }
 
   /**

@@ -4,9 +4,9 @@
  */
 
 
-import { deserialize, field, serialize, variant } from "@dao-xyz/borsh";
+import { field, serialize, variant } from "@dao-xyz/borsh";
 import { PublicKey } from "@solana/web3.js";
-import { toU64LE, readU64LE, readU128LE } from "../utils/common";
+import { readU64LE, readU128LE } from "../utils/common";
 
 /**
  * Portal instruction parameters
@@ -15,13 +15,6 @@ export interface OpenSessionParams {
   gridId: number | bigint;
   ttlSlots: bigint;
   feeCap: bigint;
-}
-
-/**
- * CloseSession instruction parameters
- */
-export interface CloseSessionParams {
-  gridId: number | bigint;
 }
 
 /**
@@ -61,14 +54,7 @@ class OpenSessionInstruction {
 }
 
 @variant(1)
-class CloseSessionInstruction {
-  @field({ type: "u64" })
-  gridId!: bigint;
-
-  constructor(params: CloseSessionParams) {
-    this.gridId = BigInt(params.gridId);
-  }
-}
+class CloseSessionInstruction {}
 
 @variant(2)
 class DepositFeeInstruction {
@@ -98,7 +84,6 @@ class UndelegateInstruction { }
  */
 export interface Session {
   discriminator: number;
-  owner: Uint8Array;
   gridId: bigint;
   ttlSlots: bigint;
   feeCap: bigint;
@@ -182,12 +167,12 @@ export class PortalProgram {
     return this.defaultProgramId;
   }
 
-  async deriveSessionPDA(owner: PublicKey, gridId: number): Promise<PublicKey> {
-    return PortalProgram.deriveSessionPDA(owner, gridId, this.defaultProgramId);
+  async deriveSessionPDA(): Promise<PublicKey> {
+    return PortalProgram.deriveSessionPDA(this.defaultProgramId);
   }
 
-  async deriveFeeVaultPDA(owner: PublicKey): Promise<PublicKey> {
-    return PortalProgram.deriveFeeVaultPDA(owner, this.defaultProgramId);
+  async deriveFeeVaultPDA(): Promise<PublicKey> {
+    return PortalProgram.deriveFeeVaultPDA(this.defaultProgramId);
   }
 
   async deriveDelegationRecordPDA(delegatedAccount: PublicKey): Promise<PublicKey> {
@@ -212,8 +197,8 @@ export class PortalProgram {
     return PortalProgram.encodeOpenSession(params);
   }
 
-  encodeCloseSession(params: CloseSessionParams): Uint8Array {
-    return PortalProgram.encodeCloseSession(params);
+  encodeCloseSession(): Uint8Array {
+    return PortalProgram.encodeCloseSession();
   }
 
   encodeDepositFee(params: DepositFeeParams): Uint8Array {
@@ -245,35 +230,28 @@ export class PortalProgram {
   }
 
   /**
-   * Derive Session PDA address
-   * Seeds: ["session", owner, grid_id (8 bytes LE)]
+   * Derive global Session PDA address.
+   * Seeds: ["session"]
    */
   static async deriveSessionPDA(
-    owner: PublicKey,
-    gridId: number,
     programId: PublicKey,
   ): Promise<PublicKey> {
     const [pda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("session", "utf8"),
-        owner.toBuffer(),
-        toU64LE(gridId),
-      ],
+      [Buffer.from("session", "utf8")],
       programId,
     );
     return pda;
   }
 
   /**
-   * Derive FeeVault PDA address
-   * Seeds: ["fee_vault", owner]
+   * Derive global FeeVault PDA address.
+   * Seeds: ["fee_vault"]
    */
   static async deriveFeeVaultPDA(
-    owner: PublicKey,
     programId: PublicKey,
   ): Promise<PublicKey> {
     const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("fee_vault", "utf8"), owner.toBuffer()],
+      [Buffer.from("fee_vault", "utf8")],
       programId,
     );
     return pda;
@@ -324,8 +302,8 @@ export class PortalProgram {
   /**
    * Encode CloseSession instruction data (borsh serialized)
    */
-  static encodeCloseSession(params: CloseSessionParams): Uint8Array {
-    return serialize(new CloseSessionInstruction(params));
+  static encodeCloseSession(): Uint8Array {
+    return serialize(new CloseSessionInstruction());
   }
 
   /**
@@ -353,16 +331,15 @@ export class PortalProgram {
    * Parse Session account data
    */
   static parseSession(data: Uint8Array): Session {
-    assertAccountDataLength(data, 82, "Session");
+    assertAccountDataLength(data, 50, "Session");
     return {
       discriminator: data[0],
-      owner: data.slice(1, 33),
-      gridId: readU64LE(data, 33),
-      ttlSlots: readU64LE(data, 41),
-      feeCap: readU64LE(data, 49),
-      createdAt: readU64LE(data, 57),
-      nonce: readU128LE(data, 65),
-      bump: data[81],
+      gridId: readU64LE(data, 1),
+      ttlSlots: readU64LE(data, 9),
+      feeCap: readU64LE(data, 17),
+      createdAt: readU64LE(data, 25),
+      nonce: readU128LE(data, 33),
+      bump: data[49],
     };
   }
 
