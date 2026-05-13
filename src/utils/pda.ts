@@ -3,30 +3,22 @@
  */
 
 import { PublicKey } from "@solana/web3.js";
-import { toU64LE } from "./common";
 
 export async function deriveSessionPDA(
-  owner: PublicKey,
-  gridId: number,
   portalProgramId: PublicKey,
 ): Promise<PublicKey> {
   const [pda] = PublicKey.findProgramAddressSync(
-    [
-      Buffer.from("session", "utf8"),
-      owner.toBuffer(),
-      toU64LE(gridId),
-    ],
+    [Buffer.from("session", "utf8")],
     portalProgramId,
   );
   return pda;
 }
 
 export async function deriveFeeVaultPDA(
-  owner: PublicKey,
   portalProgramId: PublicKey,
 ): Promise<PublicKey> {
   const [pda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("fee_vault", "utf8"), owner.toBuffer()],
+    [Buffer.from("fee_vault", "utf8")],
     portalProgramId,
   );
   return pda;

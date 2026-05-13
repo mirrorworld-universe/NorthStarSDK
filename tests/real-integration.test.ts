@@ -223,43 +223,29 @@ describe("Real Integration Tests", () => {
 
   test("Step 1: Open Session - should create session and fee vault accounts", async () => {
     console.log("\n=== Step 1: Open Session ===");
-    const sessionPDA = await sdk.portal.deriveSessionPDA(portalUser.publicKey, gridId);
-    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(portalUser.publicKey);
+    const sessionPDA = await sdk.portal.deriveSessionPDA();
+    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA();
     let sessionInfo = await rpc.getAccountInfo(sessionPDA);
 
-    let expireAfter = 0n;
     let should_create_session = true;
 
-    if(sessionInfo) {
-      const sessRaw = accountDataToBytes(sessionInfo!.data);
-      const sessionState = sdk.portal.parseSession(sessRaw);
-      expireAfter = sessionState.createdAt + sessionState.ttlSlots + 1n;
-    }
-    
-   
-    if(sessionInfo) {
-      should_create_session = false
-      console.log("sessionInfo found");
-      const slotNow = BigInt(await rpc.getSlot("confirmed"));
-      if(slotNow > expireAfter) {
-        console.log("expiredsessionInfo found, closing session");
-        await sdk.closeSession(
-          portalUser.publicKey,
-          gridId,
-          walletSignLocal(portalUser),
-          {},
-          {
-            commitment: "confirmed",
-            skipPreflight: skipPreflight,
-          },
-        );
-        console.log("✓ Session closed");
-        should_create_session = true;
-      }
+    if (sessionInfo) {
+      console.log("Existing global session found, closing it before test setup");
+      await sdk.closeSession(
+        portalUser.publicKey,
+        walletSignLocal(portalUser),
+        {},
+        {
+          commitment: "confirmed",
+          skipPreflight: skipPreflight,
+        },
+      );
+      console.log("✓ Existing session closed");
+      should_create_session = true;
     }
 
     await sleep(1000);
-   
+
     if(should_create_session) {
       const { signature } = await sdk.openSession(
         portalUser.publicKey,
@@ -346,7 +332,7 @@ describe("Real Integration Tests", () => {
   test("Step 3: Deposit Fee - should create or top up deposit receipt", async () => {
     console.log("\n=== Step 3: Deposit Fee ===");
 
-    const sessionPDA = await sdk.portal.deriveSessionPDA(portalUser.publicKey, gridId);
+    const sessionPDA = await sdk.portal.deriveSessionPDA();
 
     console.log("Session PDA:", sessionPDA.toBase58());
 
@@ -357,8 +343,6 @@ describe("Real Integration Tests", () => {
 
     await sdk.depositFee(
       portalUser.publicKey,
-      portalUser.publicKey,
-      gridId,
       4_000_000,
       walletSignLocal(portalUser),
       { depositorSigner: portalUser },
@@ -366,6 +350,7 @@ describe("Real Integration Tests", () => {
         commitment: "confirmed",
         skipPreflight: skipPreflight,
       },
+      portalUser.publicKey,
     );
 
     await sleep(1500);
@@ -411,59 +396,14 @@ describe("Real Integration Tests", () => {
     console.log("✓ Undelegate completed");
   }, 60000);
 
-  test("Step 5: Close Session - should close after TTL (separate owner, short TTL)", async () => {
-    console.log("\n=== Step 5: Close Session (short TTL) ===");
+  test("Step 5: Close Session - any signer can close active global session", async () => {
+    console.log("\n=== Step 5: Close Global Session ===");
 
-    const closeGridId = 1;
-    const ttlSlots = 15n;
-    const sessionPDA = await sdk.portal.deriveSessionPDA(
-      closeSessionOwner.publicKey,
-      closeGridId,
-    );
-    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA(closeSessionOwner.publicKey);
-
-    await sdk.openSession(
-      closeSessionOwner.publicKey,
-      closeGridId,
-      Number(ttlSlots),
-      1_000_000,
-      walletSignLocal(closeSessionOwner),
-      {},
-      {
-        commitment: "confirmed",
-        skipPreflight: skipPreflight,
-      },
-    );
-
-    await sleep(1000);
-    console.log("Session PDA:", sessionPDA.toBase58());
-    const sessionAccount = await rpc.getAccountInfo(sessionPDA);
-    expect(sessionAccount).not.toBeNull();
-    const sessRaw = accountDataToBytes(sessionAccount!.data);
-    console.log("Session raw:", sessRaw);
-    const sessionState = sdk.portal.parseSession(sessRaw);
-    console.log("Session state:", sessionState);
-    const expireAfter = sessionState.createdAt + sessionState.ttlSlots + 1n;
-
-    console.log("Waiting until slot >", expireAfter.toString(), "(session expiry)...");
-    const maxWaitMs = 120_000;
-    const start = Date.now();
-    while (Date.now() - start < maxWaitMs) {
-      const slot = await rpc.getSlot("confirmed");
-      const s = BigInt(slot);
-      if (s > expireAfter) {
-        console.log("✓ Current slot", s.toString(), "past expiry");
-        break;
-      }
-      await sleep(400);
-    }
-
-    const slotNow = BigInt(await rpc.getSlot("confirmed"));
-    expect(slotNow > expireAfter).toBe(true);
+    const sessionPDA = await sdk.portal.deriveSessionPDA();
+    const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA();
 
     await sdk.closeSession(
       closeSessionOwner.publicKey,
-      closeGridId,
       walletSignLocal(closeSessionOwner),
       {},
       {
@@ -481,7 +421,7 @@ describe("Real Integration Tests", () => {
     expect(sessionAfter).toBeNull();
     expect(vaultAfter).toBeNull();
     console.log("✓ Session and fee vault closed");
-  }, 180000);
+  }, 60000);
 
   test.skip("Step 6: Verify ER RPC is running after session opened", async () => {
     console.log("\n=== Step 6: Verify ER RPC ===");

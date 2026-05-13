@@ -8,7 +8,7 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
-import { AccountInfo, Address, NorthStarConfig } from "./types";
+import { AccountInfo, Address, NorthStarConfig, NorthStarSyncStatus } from "./types";
 import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
 import { AccountResolver } from "./readers/AccountResolver";
 import { PortalProgram } from "./programs/portal";
@@ -155,6 +155,11 @@ export class NorthStarSDK {
     return this.portalProgramId;
   }
 
+  /** Get the ER node's L1 sync cursor. */
+  async getEphemeralRollupSyncStatus(): Promise<NorthStarSyncStatus> {
+    return await this.ephemeralRollupReader.getSyncStatus();
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -287,11 +292,8 @@ export class NorthStarSDK {
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const sessionPDA = await this.portal.deriveSessionPDA(
-      signer.publicKey,
-      gridId,
-    );
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.publicKey);
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -371,19 +373,18 @@ export class NorthStarSDK {
 
   async buildDepositFee(
     signer: Keypair,
-    sessionOwner: PublicKey,
-    gridId: number,
     lamports: number,
+    recipient: PublicKey = signer.publicKey,
   ): Promise<{
     instructions: TransactionInstruction[];
     feePayer: PublicKey;
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const sessionPDA = await this.portal.deriveSessionPDA(sessionOwner, gridId);
+    const sessionPDA = await this.portal.deriveSessionPDA();
     const depositReceiptPDA = await this.portal.deriveDepositReceiptPDA(
       sessionPDA,
-      sessionOwner,
+      recipient,
     );
 
     const ix = new TransactionInstruction({
@@ -392,7 +393,7 @@ export class NorthStarSDK {
         { pubkey: signer.publicKey, isSigner: true, isWritable: true },
         { pubkey: sessionPDA, isSigner: false, isWritable: true },
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
-        { pubkey: sessionOwner, isSigner: false, isWritable: false },
+        { pubkey: recipient, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
       data: Buffer.from(
@@ -447,18 +448,14 @@ export class NorthStarSDK {
 
   async buildCloseSession(
     signer: Keypair,
-    gridId: number,
   ): Promise<{
     instructions: TransactionInstruction[];
     feePayer: PublicKey;
     blockhash: string;
     lastValidBlockHeight: bigint;
   }> {
-    const sessionPDA = await this.portal.deriveSessionPDA(
-      signer.publicKey,
-      gridId,
-    );
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(signer.publicKey);
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -468,7 +465,7 @@ export class NorthStarSDK {
         { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: Buffer.from(this.portal.encodeCloseSession({ gridId })),
+      data: Buffer.from(this.portal.encodeCloseSession()),
     });
 
     const latestBlockhash = await this.rpc.getLatestBlockhash();
@@ -490,8 +487,8 @@ export class NorthStarSDK {
     signers: SessionV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA(user, gridId);
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(user);
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -598,17 +595,16 @@ export class NorthStarSDK {
 
   async depositFee(
     user: PublicKey,
-    sessionOwner: PublicKey,
-    gridId: number,
     lamports: number,
     signTransaction: WalletSignTransaction,
     signers: DepositFeeV1Signers,
     options: TransactionOptions = {},
+    recipient: PublicKey = user,
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA(sessionOwner, gridId);
+    const sessionPDA = await this.portal.deriveSessionPDA();
     const depositReceiptPDA = await this.portal.deriveDepositReceiptPDA(
       sessionPDA,
-      sessionOwner,
+      recipient,
     );
 
     const ix = new TransactionInstruction({
@@ -617,7 +613,7 @@ export class NorthStarSDK {
         { pubkey: user, isSigner: true, isWritable: true },
         { pubkey: sessionPDA, isSigner: false, isWritable: true },
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
-        { pubkey: sessionOwner, isSigner: false, isWritable: false },
+        { pubkey: recipient, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
       data: Buffer.from(
@@ -638,7 +634,7 @@ export class NorthStarSDK {
       options,
     );
 
-    console.log(`✓ Fee deposited: ${lamports} lamports to ${sessionOwner.toBase58()}`);
+    console.log(`✓ Fee deposited: ${lamports} lamports to ${recipient.toBase58()}`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
@@ -691,13 +687,12 @@ export class NorthStarSDK {
 
   async closeSession(
     user: PublicKey,
-    gridId: number,
     signTransaction: WalletSignTransaction,
     signers: SessionV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA(user, gridId);
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA(user);
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -707,7 +702,7 @@ export class NorthStarSDK {
         { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: Buffer.from(this.portal.encodeCloseSession({ gridId })),
+      data: Buffer.from(this.portal.encodeCloseSession()),
     });
 
     const feePayer = signers.feePayerSigner?.publicKey ?? user;

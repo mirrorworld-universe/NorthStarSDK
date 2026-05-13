@@ -44,6 +44,33 @@ export interface EphemeralRollupAccountResponse {
 }
 
 /**
+ * NorthStar L1 sync cursor exposed by `northstarSysGetSyncStatus`.
+ */
+export interface NorthStarSyncStatus {
+  isSyncing: boolean;
+  latestSyncedSlot: bigint;
+  latestL1Slot: bigint;
+}
+
+/**
+ * Raw JSON-RPC response for `northstarSysGetSyncStatus`.
+ */
+export interface NorthStarSyncStatusResponse {
+  jsonrpc: string;
+  result: {
+    isSyncing: boolean;
+    latestSyncedSlot: number | string;
+    latestL1Slot: number | string;
+  };
+  id: number;
+}
+
+/**
+ * NorthStar JSON-RPC application errors.
+ */
+export const NORTHSTAR_RPC_ERROR_EPHEMERAL_ROLLUP_NOT_ACTIVE = -34001;
+
+/**
  * SDK configuration
  */
 export interface NorthStarConfig {

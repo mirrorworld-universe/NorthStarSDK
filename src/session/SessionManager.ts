@@ -41,11 +41,7 @@ export class SessionManager {
       ttlSlots = BigInt(2000),
     } = params;
 
-    const sessionPDA = await PortalProgram.deriveSessionPDA(
-      owner,
-      gridId,
-      this.portalProgramId,
-    );
+    const sessionPDA = await PortalProgram.deriveSessionPDA(this.portalProgramId);
 
     const session: Session = {
       pda: sessionPDA,
