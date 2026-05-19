@@ -306,9 +306,15 @@ describe("Real Integration Tests", () => {
       const { signature } = await sdk.delegate(
         portalUser.publicKey,
         gridId,
-        SYSTEM_PROGRAM_ID,
         walletSignLocal(portalUser),
-        { delegatedAccountSigner: delegatedAccount },
+        {
+          delegations: [
+            {
+              delegatedAccountSigner: delegatedAccount,
+              ownerProgramId: SYSTEM_PROGRAM_ID,
+            },
+          ],
+        },
         {
           commitment: "confirmed",
           skipPreflight: skipPreflight,
