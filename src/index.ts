@@ -41,8 +41,13 @@ export interface TransactionOptions {
   intervalMs?: number;
 }
 
-export interface DelegateV1Signers {
+export interface DelegateAccount {
   delegatedAccountSigner: Keypair;
+  ownerProgramId: PublicKey;
+}
+
+export interface DelegateV1Signers {
+  delegations: DelegateAccount[];
   feePayerSigner?: Keypair;
 }
 
@@ -57,8 +62,11 @@ export interface DepositFeeV1Signers {
   feePayerSigner?: Keypair;
 }
 
-/** undelegate: same as delegate (delegated account + optional fee payer). */
-export type UndelegateV1Signers = DelegateV1Signers;
+/** undelegate: one delegated account + optional fee payer. */
+export interface UndelegateV1Signers {
+  delegatedAccountSigner: Keypair;
+  feePayerSigner?: Keypair;
+}
 
 /** Wallet completes signatures on a partially locally-signed transaction; without local signers, this step completes user and any remaining signatures. */
 export type WalletSignTransaction = (
@@ -258,7 +266,7 @@ export class NorthStarSDK {
   }
 
   /**
-   * Same flow as delegate_v1: local signers partial-sign first, then signTransaction (wallet), then on-chain confirmation.
+   * Local signers partial-sign first, then signTransaction (wallet), then on-chain confirmation.
    */
   private async sendTxV1(
     payerKey: PublicKey,
@@ -324,50 +332,62 @@ export class NorthStarSDK {
 
   async buildDelegate(
     signer: Keypair,
-    delegatedAccount: PublicKey,
     gridId: number,
-    ownerProgramId: PublicKey,
+    delegations: DelegateAccount[],
   ): Promise<{
     instructions: TransactionInstruction[];
     feePayer: PublicKey;
     blockhash: string;
     lastValidBlockHeight: bigint;
-    buffer: Keypair;
+    buffers: Keypair[];
   }> {
-    const delegationRecordPDA =
-      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+    if (delegations.length === 0) {
+      throw new Error("delegate requires at least one delegation");
+    }
 
-    const buffer = Keypair.generate();
     const bufferRent = await this.rpc.getMinimumBalanceForRentExemption(0);
-    const createBufferIx = SystemProgram.createAccount({
-      fromPubkey: signer.publicKey,
-      newAccountPubkey: buffer.publicKey,
-      lamports: bufferRent,
-      space: 0,
-      programId: ownerProgramId,
-    });
+    const buffers = delegations.map(() => Keypair.generate());
+    const createBufferIxs = delegations.map((delegation, index) =>
+      SystemProgram.createAccount({
+        fromPubkey: signer.publicKey,
+        newAccountPubkey: buffers[index].publicKey,
+        lamports: bufferRent,
+        space: 0,
+        programId: delegation.ownerProgramId,
+      }),
+    );
+
+    const keys = [
+      { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ];
+    for (let i = 0; i < delegations.length; i++) {
+      const delegation = delegations[i];
+      const delegatedAccount = delegation.delegatedAccountSigner.publicKey;
+      const delegationRecordPDA =
+        await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+      keys.push(
+        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
+        { pubkey: delegation.ownerProgramId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
+        { pubkey: buffers[i].publicKey, isSigner: false, isWritable: false },
+      );
+    }
 
     const delegateIx = new TransactionInstruction({
       programId: this.portalProgramId,
-      keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
-        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: buffer.publicKey, isSigner: false, isWritable: false },
-      ],
+      keys,
       data: Buffer.from(this.portal.encodeDelegate({ gridId })),
     });
 
     const latestBlockhash = await this.rpc.getLatestBlockhash();
 
     return {
-      instructions: [createBufferIx, delegateIx],
+      instructions: [...createBufferIxs, delegateIx],
       feePayer: signer.publicKey,
       blockhash: latestBlockhash.blockhash,
       lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
-      buffer,
+      buffers,
     };
   }
 
@@ -528,69 +548,69 @@ export class NorthStarSDK {
   async delegate(
     user: PublicKey,
     gridId: number,
-    ownerProgramId: PublicKey,
     signTransaction: WalletSignTransaction,
     signers: DelegateV1Signers,
     options: TransactionOptions = {},
   ): Promise<TransactionResult> {
-    const delegatedAccount = signers.delegatedAccountSigner.publicKey;
-    const delegationRecordPDA =
-      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+    if (signers.delegations.length === 0) {
+      throw new Error("delegate requires at least one delegation");
+    }
 
-    const buffer = Keypair.generate();
     const bufferRent = await this.rpc.getMinimumBalanceForRentExemption(0);
-    const createBufferIx = SystemProgram.createAccount({
-      fromPubkey: user,
-      newAccountPubkey: buffer.publicKey,
-      lamports: bufferRent,
-      space: 0,
-      programId: ownerProgramId,
-    });
+    const buffers = signers.delegations.map(() => Keypair.generate());
+    const createBufferIxs = signers.delegations.map((delegation, index) =>
+      SystemProgram.createAccount({
+        fromPubkey: user,
+        newAccountPubkey: buffers[index].publicKey,
+        lamports: bufferRent,
+        space: 0,
+        programId: delegation.ownerProgramId,
+      }),
+    );
+
+    const keys = [
+      { pubkey: user, isSigner: true, isWritable: true },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+    ];
+    for (let i = 0; i < signers.delegations.length; i++) {
+      const delegation = signers.delegations[i];
+      const delegatedAccount = delegation.delegatedAccountSigner.publicKey;
+      const delegationRecordPDA =
+        await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+      keys.push(
+        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
+        { pubkey: delegation.ownerProgramId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
+        { pubkey: buffers[i].publicKey, isSigner: false, isWritable: false },
+      );
+    }
 
     const delegateIx = new TransactionInstruction({
       programId: this.portalProgramId,
-      keys: [
-        { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
-        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: buffer.publicKey, isSigner: false, isWritable: false },
-      ],
+      keys,
       data: Buffer.from(this.portal.encodeDelegate({ gridId })),
     });
 
     const feePayer = signers.feePayerSigner?.publicKey ?? user;
 
     const localSigners = [
-      ...this.keypairsFromSignersRecord(signers),
-      buffer,
-    ];
+      signers.feePayerSigner,
+      ...signers.delegations.map((delegation) => delegation.delegatedAccountSigner),
+      ...buffers,
+    ].filter((signer): signer is Keypair => signer !== undefined);
 
     const { signature } = await this.sendTxV1(
       feePayer,
-      [createBufferIx, delegateIx],
+      [...createBufferIxs, delegateIx],
       signTransaction,
       localSigners,
       options,
     );
 
-    console.log(`✓ Account delegated: ${delegatedAccount.toBase58()}`);
+    console.log(`✓ Delegated ${signers.delegations.length} account(s)`);
     console.log(`  Signature: ${signature}`);
 
     return { signature };
-  }
-
-  /** @deprecated Same as {@link delegate}; kept as an alias for backward compatibility. */
-  async delegate_v1(
-    user: PublicKey,
-    gridId: number,
-    ownerProgramId: PublicKey,
-    signTransaction: WalletSignTransaction,
-    signers: DelegateV1Signers,
-    options: TransactionOptions = {},
-  ): Promise<TransactionResult> {
-    return this.delegate(user, gridId, ownerProgramId, signTransaction, signers, options);
   }
 
   async depositFee(

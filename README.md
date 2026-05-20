@@ -227,14 +227,13 @@ If omitted, signing is done by the wallet for `user`; locally you can sign with 
 
 ### `delegate`
 
-Delegate an **account already owned by the Portal program** to a grid (instruction data includes `gridId`).  
-**`ownerProgramId`** is the **current owner program** of the delegated account (typical flow: assign the account to Portal first; when delegating, pass System Program or others per your on-chain convention).
+Delegate one or more **Portal-owned accounts** to a grid in one Portal instruction (instruction data includes `gridId`).  
+Each delegation carries its own `ownerProgramId`, the original owner program recorded for undelegation.
 
 ```typescript
 await sdk.delegate(
   user,                    // PublicKey: payer / primary signer
   gridId,
-  ownerProgramId,          // PublicKey
   signTransaction,
   signers,                 // DelegateV1Signers
   options?,
@@ -245,7 +244,10 @@ await sdk.delegate(
 
 ```typescript
 {
-  delegatedAccountSigner: Keypair;  // delegated account — must sign
+  delegations: Array<{
+    delegatedAccountSigner: Keypair;  // delegated account — must sign
+    ownerProgramId: PublicKey;
+  }>;
   feePayerSigner?: Keypair;
 }
 ```
@@ -259,14 +261,10 @@ await sdk.undelegate(
   user,
   ownerProgramId,          // 必须等于 delegate 时传入的同一个 owner 程序
   signTransaction,
-  signers,                 // same as DelegateV1Signers
+  signers,                 // { delegatedAccountSigner, feePayerSigner? }
   options?,
 );
 ```
-
-### `delegate_v1`
-
-Alias for `delegate` for backward compatibility; **deprecated**.
 
 ---
 
@@ -279,7 +277,7 @@ Use when composing custom transactions or showing them in an external wallet:
 | `buildOpenSession(signer, gridId, ttlSlots?, feeCap?)` | `{ instructions, feePayer, blockhash, lastValidBlockHeight }` |
 | `buildCloseSession(signer, gridId)` | same |
 | `buildDepositFee(signer, sessionOwner, gridId, lamports)` | same |
-| `buildDelegate(signer, delegatedAccount, gridId)` | same (**note**: account list differs from `delegate()`; the `build*` family targets another layout — compare `src/index.ts` and the on-chain IDL before use) |
+| `buildDelegate(signer, gridId, delegations)` | same, plus generated `buffers` |
 | `buildUndelegate(signer, delegatedAccount)` | same |
 
 Here `instructions` is `TransactionInstruction[]`, and `feePayer` is `signer.publicKey`.
