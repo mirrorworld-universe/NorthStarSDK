@@ -26,7 +26,7 @@ import { signVersionedTransaction } from "../src/solana/kitCompat";
 import { config } from "dotenv";
 config();
 
-let skipPreflight = true;
+let skipPreflight = process.env.SKIP_PREFLIGHT !== "false";
 const SYSTEM_PROGRAM_ID = SystemProgram.programId;
 
 function sleep(ms: number) {
@@ -48,8 +48,9 @@ function accountDataToBytes(data: any): Uint8Array {
   throw new Error("Invalid account data");
 }
 
-const EPHEMERAL_ROLLUP_RPC = "https://ephemeral.devnet.sonic.game";
-const VALIDATOR_RPC = "https://api.devnet.solana.com";
+const EPHEMERAL_ROLLUP_RPC =
+  process.env.EPHEMERAL_ROLLUP_RPC ?? "http://localhost:8899";
+const VALIDATOR_RPC = process.env.VALIDATOR_RPC ?? "http://localhost:8899";
 
 function getPortalProgramId(): PublicKey {
   const raw = process.env.PORTAL_PROGRAM_ID!.trim();
@@ -258,6 +259,10 @@ describe("Real Integration Tests", () => {
           commitment: "confirmed",
           skipPreflight: skipPreflight,
         },
+        {
+          validator: portalUser.publicKey,
+          settlementIntervalSlots: 10,
+        },
       );
       console.log("✓ Session created");
       console.log("  Signature:", signature);
@@ -366,8 +371,12 @@ describe("Real Integration Tests", () => {
     console.log("Receipt info:", receiptInfo);
     const raw = accountDataToBytes(receiptInfo!.data);
     const receiptState = sdk.portal.parseDepositReceipt(raw);
-    expect(receiptState.balance).toBeGreaterThanOrEqual(500_000n);
-    console.log("✓ Deposit receipt balance:", receiptState.balance.toString());
+    expect(new PublicKey(receiptState.session).equals(sessionPDA)).toBe(true);
+    expect(new PublicKey(receiptState.recipient).equals(portalUser.publicKey)).toBe(
+      true,
+    );
+    expect(BigInt(receiptInfo!.lamports)).toBeGreaterThanOrEqual(4_000_000n);
+    console.log("✓ Deposit receipt lamports:", receiptInfo!.lamports);
   }, 60000);
 
 

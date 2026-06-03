@@ -6,15 +6,17 @@
 
 import { field, serialize, variant } from "@dao-xyz/borsh";
 import { PublicKey } from "@solana/web3.js";
-import { readU64LE, readU128LE } from "../utils/common";
+import { readU64LE, readU128LE, toU64LE } from "../utils/common";
 
 /**
  * Portal instruction parameters
  */
 export interface OpenSessionParams {
   gridId: number | bigint;
-  ttlSlots: bigint;
-  feeCap: bigint;
+  ttlSlots: number | bigint;
+  feeCap: number | bigint;
+  validator?: PublicKey;
+  settlementIntervalSlots?: number | bigint;
 }
 
 /**
@@ -34,24 +36,6 @@ export interface DelegateParams {
 /**
  * Instruction variants for borsh serialization
  */
-
-@variant(0)
-class OpenSessionInstruction {
-  @field({ type: "u64" })
-  gridId!: bigint;
-
-  @field({ type: "u64" })
-  ttlSlots!: bigint;
-
-  @field({ type: "u64" })
-  feeCap!: bigint;
-
-  constructor(params: OpenSessionParams) {
-    this.gridId = BigInt(params.gridId);
-    this.ttlSlots = params.ttlSlots;
-    this.feeCap = params.feeCap;
-  }
-}
 
 @variant(1)
 class CloseSessionInstruction {}
@@ -89,6 +73,16 @@ export interface Session {
   feeCap: bigint;
   createdAt: bigint;
   nonce: bigint;
+  authority: PublicKey;
+  validator: PublicKey;
+  settlementIntervalSlots: bigint;
+  lastSettledL1Slot: bigint;
+  lastSettledErSlot: bigint;
+  settlementStatus: number;
+  settlementErSlot: bigint;
+  settlementChecksum: Uint8Array;
+  settlementAccumulator: Uint8Array;
+  settlementStartedL1Slot: bigint;
   bump: number;
 }
 
@@ -141,6 +135,8 @@ export const DELEGATION_RECORD_DISCRIMINATOR = 3;
  * DepositReceipt discriminator
  */
 export const DEPOSIT_RECEIPT_DISCRIMINATOR = 4;
+
+export const SESSION_LEN = 219;
 
 function assertAccountDataLength(
   data: Uint8Array,
@@ -296,7 +292,18 @@ export class PortalProgram {
    * Encode OpenSession instruction data (borsh serialized)
    */
   static encodeOpenSession(params: OpenSessionParams): Uint8Array {
-    return serialize(new OpenSessionInstruction(params));
+    if (!params.validator) {
+      throw new Error("OpenSession validator is required");
+    }
+
+    const data = new Uint8Array(1 + 8 + 8 + 8 + 32 + 8);
+    data[0] = 0;
+    data.set(toU64LE(params.gridId), 1);
+    data.set(toU64LE(params.ttlSlots), 9);
+    data.set(toU64LE(params.feeCap), 17);
+    data.set(params.validator.toBytes(), 25);
+    data.set(toU64LE(params.settlementIntervalSlots ?? 10n), 57);
+    return data;
   }
 
   /**
@@ -331,7 +338,7 @@ export class PortalProgram {
    * Parse Session account data
    */
   static parseSession(data: Uint8Array): Session {
-    assertAccountDataLength(data, 50, "Session");
+    assertAccountDataLength(data, SESSION_LEN, "Session");
     return {
       discriminator: data[0],
       gridId: readU64LE(data, 1),
@@ -339,7 +346,17 @@ export class PortalProgram {
       feeCap: readU64LE(data, 17),
       createdAt: readU64LE(data, 25),
       nonce: readU128LE(data, 33),
-      bump: data[49],
+      authority: new PublicKey(data.slice(49, 81)),
+      validator: new PublicKey(data.slice(81, 113)),
+      settlementIntervalSlots: readU64LE(data, 113),
+      lastSettledL1Slot: readU64LE(data, 121),
+      lastSettledErSlot: readU64LE(data, 129),
+      settlementStatus: data[137],
+      settlementErSlot: readU64LE(data, 138),
+      settlementChecksum: data.slice(146, 178),
+      settlementAccumulator: data.slice(178, 210),
+      settlementStartedL1Slot: readU64LE(data, 210),
+      bump: data[218],
     };
   }
 
