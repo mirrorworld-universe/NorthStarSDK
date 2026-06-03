@@ -418,6 +418,10 @@ export class NorthStarSDK {
       sessionPDA,
       recipient,
     );
+    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
+      sessionPDA,
+      recipient,
+    );
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -427,6 +431,7 @@ export class NorthStarSDK {
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
         { pubkey: recipient, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: withdrawalSinkPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(
         this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
@@ -441,6 +446,23 @@ export class NorthStarSDK {
       blockhash: latestBlockhash.blockhash,
       lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
     };
+  }
+
+  async buildErSolWithdrawal(
+    recipient: PublicKey,
+    lamports: number,
+  ): Promise<TransactionInstruction> {
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
+      sessionPDA,
+      recipient,
+    );
+
+    return SystemProgram.transfer({
+      fromPubkey: recipient,
+      toPubkey: withdrawalSinkPDA,
+      lamports,
+    });
   }
 
   async buildUndelegate(
@@ -647,6 +669,10 @@ export class NorthStarSDK {
       sessionPDA,
       recipient,
     );
+    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
+      sessionPDA,
+      recipient,
+    );
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -656,6 +682,7 @@ export class NorthStarSDK {
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
         { pubkey: recipient, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: withdrawalSinkPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(
         this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
