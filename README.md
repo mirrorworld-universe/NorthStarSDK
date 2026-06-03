@@ -208,7 +208,7 @@ If `feePayerSigner` is passed, its public key must match the fee payer or an err
 
 ### `depositFee`
 
-Deposit `lamports` into a user’s session.
+Deposit `lamports` into a user’s session. The SDK also passes the recipient withdrawal-sink PDA so ER withdrawal transfers have a rent-funded destination.
 
 ```typescript
 await sdk.depositFee(
@@ -223,6 +223,17 @@ await sdk.depositFee(
 
 **`DepositFeeV1Signers`**: `{ depositorSigner?: Keypair; feePayerSigner?: Keypair }`  
 If omitted, signing is done by the wallet for `user`; locally you can sign with `depositorSigner` / `feePayerSigner` first, then hand off to the wallet.
+
+### `buildErSolWithdrawal`
+
+Build the ER transaction instruction that requests L1 SOL payout at next settlement.
+
+```typescript
+const ix = await sdk.buildErSolWithdrawal(user, lamports);
+// send ix to sdk.getEphemeralConnection(); not L1
+```
+
+Internally this is a system transfer from `user` to `withdrawal_sink(session, user)`.
 
 ### `delegate`
 
@@ -295,6 +306,7 @@ Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the config
 | `deriveFeeVaultPDA()` | `fee_vault` |
 | `deriveDelegationRecordPDA(delegatedAccount)` | `delegation` + delegatedAccount |
 | `deriveDepositReceiptPDA(session, recipient)` | `deposit_receipt` + session + recipient |
+| `deriveWithdrawalSinkPDA(session, recipient)` | `withdrawal_sink` + session + recipient |
 
 ### Instruction encoding (Borsh)
 
@@ -315,7 +327,7 @@ After `getAccountInfo` returns `data: Uint8Array`:
 | `parseSession(data)` | Session state |
 | `parseFeeVault(data)` | FeeVault |
 | `parseDelegationRecord(data)` | DelegationRecord |
-| `parseDepositReceipt(data)` | DepositReceipt |
+| `parseDepositReceipt(data)` | DepositReceipt (`balance`, `withdrawn`) |
 
 You can combine with constants like `SESSION_DISCRIMINATOR` for type discrimination.
 
