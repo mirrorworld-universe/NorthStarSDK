@@ -50,3 +50,19 @@ export async function deriveDepositReceiptPDA(
   );
   return pda;
 }
+
+export async function deriveWithdrawalSinkPDA(
+  session: PublicKey,
+  recipient: PublicKey,
+  portalProgramId: PublicKey,
+): Promise<PublicKey> {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [
+      Buffer.from("withdrawal_sink", "utf8"),
+      session.toBuffer(),
+      recipient.toBuffer(),
+    ],
+    portalProgramId,
+  );
+  return pda;
+}

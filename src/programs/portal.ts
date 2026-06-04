@@ -113,6 +113,7 @@ export interface DepositReceipt {
   session: Uint8Array;
   recipient: Uint8Array;
   balance: bigint;
+  withdrawn: bigint;
   bump: number;
 }
 
@@ -137,6 +138,7 @@ export const DELEGATION_RECORD_DISCRIMINATOR = 3;
 export const DEPOSIT_RECEIPT_DISCRIMINATOR = 4;
 
 export const SESSION_LEN = 219;
+export const DEPOSIT_RECEIPT_LEN = 82;
 
 function assertAccountDataLength(
   data: Uint8Array,
@@ -183,6 +185,17 @@ export class PortalProgram {
     recipient: PublicKey,
   ): Promise<PublicKey> {
     return PortalProgram.deriveDepositReceiptPDA(
+      session,
+      recipient,
+      this.defaultProgramId,
+    );
+  }
+
+  async deriveWithdrawalSinkPDA(
+    session: PublicKey,
+    recipient: PublicKey,
+  ): Promise<PublicKey> {
+    return PortalProgram.deriveWithdrawalSinkPDA(
       session,
       recipient,
       this.defaultProgramId,
@@ -280,6 +293,26 @@ export class PortalProgram {
     const [pda] = PublicKey.findProgramAddressSync(
       [
         Buffer.from("deposit_receipt", "utf8"),
+        session.toBuffer(),
+        recipient.toBuffer(),
+      ],
+      programId,
+    );
+    return pda;
+  }
+
+  /**
+   * Derive ER withdrawal sink PDA address.
+   * Seeds: ["withdrawal_sink", session, recipient]
+   */
+  static async deriveWithdrawalSinkPDA(
+    session: PublicKey,
+    recipient: PublicKey,
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("withdrawal_sink", "utf8"),
         session.toBuffer(),
         recipient.toBuffer(),
       ],
@@ -389,13 +422,14 @@ export class PortalProgram {
    * Parse DepositReceipt account data
    */
   static parseDepositReceipt(data: Uint8Array): DepositReceipt {
-    assertAccountDataLength(data, 74, "DepositReceipt");
+    assertAccountDataLength(data, DEPOSIT_RECEIPT_LEN, "DepositReceipt");
     return {
       discriminator: data[0],
       session: data.slice(1, 33),
       recipient: data.slice(33, 65),
       balance: readU64LE(data, 65),
-      bump: data[73],
+      withdrawn: readU64LE(data, 73),
+      bump: data[81],
     };
   }
 }

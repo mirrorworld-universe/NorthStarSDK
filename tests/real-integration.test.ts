@@ -148,6 +148,7 @@ describe("Real Integration Tests", () => {
   let portalUser: Keypair;
   let delegatedAccount: Keypair;
   let closeSessionOwner: Keypair;
+  let validatorIdentity: PublicKey;
   const gridId = 1;
 
   beforeAll(async () => {
@@ -159,6 +160,8 @@ describe("Real Integration Tests", () => {
       },
     });
     rpc = sdk.getRpc();
+    const identityResponse = await (rpc as any)._rpcRequest("getIdentity", []);
+    validatorIdentity = new PublicKey(identityResponse.result.identity);
 
 
     try {
@@ -260,7 +263,7 @@ describe("Real Integration Tests", () => {
           skipPreflight: skipPreflight,
         },
         {
-          validator: portalUser.publicKey,
+          validator: validatorIdentity,
           settlementIntervalSlots: 10,
         },
       );
@@ -351,6 +354,10 @@ describe("Real Integration Tests", () => {
       sessionPDA,
       portalUser.publicKey,
     );
+    const withdrawalSinkPDA = await sdk.portal.deriveWithdrawalSinkPDA(
+      sessionPDA,
+      portalUser.publicKey,
+    );
 
     await sdk.depositFee(
       portalUser.publicKey,
@@ -375,13 +382,79 @@ describe("Real Integration Tests", () => {
     expect(new PublicKey(receiptState.recipient).equals(portalUser.publicKey)).toBe(
       true,
     );
+    expect(receiptState.withdrawn).toBe(0n);
     expect(BigInt(receiptInfo!.lamports)).toBeGreaterThanOrEqual(4_000_000n);
+    const sinkInfo = await rpc.getAccountInfo(withdrawalSinkPDA);
+    expect(sinkInfo).not.toBeNull();
     console.log("✓ Deposit receipt lamports:", receiptInfo!.lamports);
   }, 60000);
 
 
-  test("Step 4: Undelegate - should assign account back and clear delegation record", async () => {
-    console.log("\n=== Step 4: Undelegate ===");
+  test("Step 4: ER SOL withdrawal - should transfer to withdrawal sink", async () => {
+    console.log("\n=== Step 4: ER SOL Withdrawal ===");
+
+    const erRpc = sdk.getEphemeralRpc();
+    const sessionPDA = await sdk.portal.deriveSessionPDA();
+    const withdrawalSinkPDA = await sdk.portal.deriveWithdrawalSinkPDA(
+      sessionPDA,
+      portalUser.publicKey,
+    );
+    const sinkBefore = await erRpc.getBalance(withdrawalSinkPDA, "processed");
+    const l1BalanceBefore = await rpc.getBalance(portalUser.publicKey);
+    const depositReceiptPDA = await sdk.portal.deriveDepositReceiptPDA(
+      sessionPDA,
+      portalUser.publicKey,
+    );
+    const withdrawLamports = 1_000_000;
+    const ix = await sdk.buildErSolWithdrawal(
+      portalUser.publicKey,
+      withdrawLamports,
+    );
+    const { blockhash } = await erRpc.getLatestBlockhash("processed");
+    const messageV0 = new TransactionMessage({
+      payerKey: portalUser.publicKey,
+      recentBlockhash: blockhash,
+      instructions: [ix],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(messageV0);
+    tx.sign([portalUser]);
+
+    const signature = await erRpc.sendRawTransaction(Buffer.from(tx.serialize()), {
+      skipPreflight,
+    });
+    console.log("ER withdrawal signature:", signature);
+    await sleep(1500);
+
+    const sinkAfter = await erRpc.getBalance(withdrawalSinkPDA, "processed");
+    expect(sinkAfter - sinkBefore).toBe(withdrawLamports);
+    console.log("✓ Withdrawal sink credited:", sinkAfter - sinkBefore);
+
+    let settledReceiptWithdrawn = 0n;
+    let l1BalanceAfterSettlement = l1BalanceBefore;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await sleep(1000);
+      const receiptInfo = await rpc.getAccountInfo(depositReceiptPDA);
+      if (receiptInfo == null) continue;
+      const receiptState = sdk.portal.parseDepositReceipt(
+        accountDataToBytes(receiptInfo.data),
+      );
+      settledReceiptWithdrawn = receiptState.withdrawn;
+      l1BalanceAfterSettlement = await rpc.getBalance(portalUser.publicKey);
+      if (settledReceiptWithdrawn >= BigInt(withdrawLamports)) break;
+    }
+
+    expect(settledReceiptWithdrawn).toBeGreaterThanOrEqual(BigInt(withdrawLamports));
+    expect(l1BalanceAfterSettlement).toBeGreaterThan(l1BalanceBefore);
+    console.log(
+      "✓ L1 payout observed:",
+      l1BalanceAfterSettlement - l1BalanceBefore,
+      "withdrawn:",
+      settledReceiptWithdrawn.toString(),
+    );
+  }, 60000);
+
+  test("Step 5: Undelegate - should assign account back and clear delegation record", async () => {
+    console.log("\n=== Step 5: Undelegate ===");
 
     const delegationRecordPDA =
       await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.publicKey);
@@ -411,8 +484,8 @@ describe("Real Integration Tests", () => {
     console.log("✓ Undelegate completed");
   }, 60000);
 
-  test("Step 5: Close Session - any signer can close active global session", async () => {
-    console.log("\n=== Step 5: Close Global Session ===");
+  test("Step 6: Close Session - any signer can close active global session", async () => {
+    console.log("\n=== Step 6: Close Global Session ===");
 
     const sessionPDA = await sdk.portal.deriveSessionPDA();
     const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA();
