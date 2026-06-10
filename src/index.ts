@@ -79,6 +79,16 @@ export type WalletSignTransaction = (
 ) => Promise<VersionedTransaction>;
 
 const SYSTEM_PROGRAM_ID = SystemProgram.programId;
+export const MEMO_PROGRAM_ID = new PublicKey(
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+);
+
+export interface ErSolWithdrawalParams {
+  erSource: PublicKey;
+  l1Recipient: PublicKey;
+  lamports: number;
+  sessionPDA?: PublicKey;
+}
 
 export function encodeSystemProgramAssignData(newProgramOwner: PublicKey): Uint8Array {
   const data = new Uint8Array(4 + 32);
@@ -448,21 +458,42 @@ export class NorthStarSDK {
     };
   }
 
+  async buildErSolWithdrawalInstructions({
+    erSource,
+    l1Recipient,
+    lamports,
+    sessionPDA,
+  }: ErSolWithdrawalParams): Promise<TransactionInstruction[]> {
+    const resolvedSessionPDA = sessionPDA ?? (await this.portal.deriveSessionPDA());
+    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
+      resolvedSessionPDA,
+      erSource,
+    );
+
+    return [
+      SystemProgram.transfer({
+        fromPubkey: erSource,
+        toPubkey: withdrawalSinkPDA,
+        lamports,
+      }),
+      new TransactionInstruction({
+        programId: MEMO_PROGRAM_ID,
+        keys: [],
+        data: Buffer.from(l1Recipient.toBase58(), "utf8"),
+      }),
+    ];
+  }
+
   async buildErSolWithdrawal(
     recipient: PublicKey,
     lamports: number,
   ): Promise<TransactionInstruction> {
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
-      sessionPDA,
-      recipient,
-    );
-
-    return SystemProgram.transfer({
-      fromPubkey: recipient,
-      toPubkey: withdrawalSinkPDA,
+    const [transferIx] = await this.buildErSolWithdrawalInstructions({
+      erSource: recipient,
+      l1Recipient: recipient,
       lamports,
     });
+    return transferIx;
   }
 
   async buildUndelegate(

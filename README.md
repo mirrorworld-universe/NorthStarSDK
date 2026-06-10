@@ -364,7 +364,7 @@ Plus `TransactionResult`, `TransactionOptions`, various `*V1Signers`, `WalletSig
 |------|------|
 | `PORTAL_PROGRAM_ID` | Portal program ID (Base58) |
 | `VALIDATOR_RPC` | L1/local validator RPC (default `http://localhost:8899`) |
-| `EPHEMERAL_ROLLUP_RPC` | ER RPC (default `http://localhost:8899`; ER health test is skipped by default) |
+| `EPHEMERAL_ROLLUP_RPC` | ER RPC (default `http://localhost:8910`; ER health test is skipped by default) |
 | `TRANSFER_SOURCE_PRIVATE_KEY` | Funding private key Base58 (for test transfers) |
 
 Run unit tests (excluding integration):
