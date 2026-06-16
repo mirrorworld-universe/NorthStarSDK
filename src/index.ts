@@ -56,6 +56,11 @@ export interface SessionV1Signers {
   feePayerSigner?: Keypair;
 }
 
+export interface OpenSessionConfig {
+  validator?: PublicKey;
+  settlementIntervalSlots?: number;
+}
+
 /** depositFee: depositor and fee payer; if depositorSigner is omitted, the wallet signs user. */
 export interface DepositFeeV1Signers {
   depositorSigner?: Keypair;
@@ -294,6 +299,7 @@ export class NorthStarSDK {
     gridId: number,
     ttlSlots: number = 2000,
     feeCap: number = 1_000_000,
+    openSessionConfig: OpenSessionConfig = {},
   ): Promise<{
     instructions: TransactionInstruction[];
     feePayer: PublicKey;
@@ -316,6 +322,10 @@ export class NorthStarSDK {
           gridId,
           ttlSlots: BigInt(ttlSlots),
           feeCap: BigInt(feeCap),
+          validator: openSessionConfig.validator ?? signer.publicKey,
+          settlementIntervalSlots: BigInt(
+            openSessionConfig.settlementIntervalSlots ?? 10,
+          ),
         }),
       ),
     });
@@ -345,6 +355,7 @@ export class NorthStarSDK {
       throw new Error("delegate requires at least one delegation");
     }
 
+    const sessionPDA = await this.portal.deriveSessionPDA();
     const bufferRent = await this.rpc.getMinimumBalanceForRentExemption(0);
     const buffers = delegations.map(() => Keypair.generate());
     const createBufferIxs = delegations.map((delegation, index) =>
@@ -360,6 +371,7 @@ export class NorthStarSDK {
     const keys = [
       { pubkey: signer.publicKey, isSigner: true, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: sessionPDA, isSigner: false, isWritable: false },
     ];
     for (let i = 0; i < delegations.length; i++) {
       const delegation = delegations[i];
@@ -406,15 +418,20 @@ export class NorthStarSDK {
       sessionPDA,
       recipient,
     );
+    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
+      sessionPDA,
+      recipient,
+    );
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
         { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: sessionPDA, isSigner: false, isWritable: true },
+        { pubkey: sessionPDA, isSigner: false, isWritable: false },
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
         { pubkey: recipient, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: withdrawalSinkPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(
         this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
@@ -431,6 +448,23 @@ export class NorthStarSDK {
     };
   }
 
+  async buildErSolWithdrawal(
+    recipient: PublicKey,
+    lamports: number,
+  ): Promise<TransactionInstruction> {
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
+      sessionPDA,
+      recipient,
+    );
+
+    return SystemProgram.transfer({
+      fromPubkey: recipient,
+      toPubkey: withdrawalSinkPDA,
+      lamports,
+    });
+  }
+
   async buildUndelegate(
     signer: Keypair,
     delegatedAccount: PublicKey,
@@ -443,6 +477,7 @@ export class NorthStarSDK {
   }> {
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+    const sessionPDA = await this.portal.deriveSessionPDA();
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -452,6 +487,7 @@ export class NorthStarSDK {
         { pubkey: ownerProgramId, isSigner: false, isWritable: false },
         { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: sessionPDA, isSigner: false, isWritable: false },
       ],
       data: Buffer.from(this.portal.encodeUndelegate()),
     });
@@ -506,6 +542,7 @@ export class NorthStarSDK {
     signTransaction: WalletSignTransaction,
     signers: SessionV1Signers,
     options: TransactionOptions = {},
+    openSessionConfig: OpenSessionConfig = {},
   ): Promise<TransactionResult> {
     const sessionPDA = await this.portal.deriveSessionPDA();
     const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
@@ -523,6 +560,10 @@ export class NorthStarSDK {
           gridId,
           ttlSlots: BigInt(ttlSlots),
           feeCap: BigInt(feeCap),
+          validator: openSessionConfig.validator ?? user,
+          settlementIntervalSlots: BigInt(
+            openSessionConfig.settlementIntervalSlots ?? 10,
+          ),
         }),
       ),
     });
@@ -556,6 +597,7 @@ export class NorthStarSDK {
       throw new Error("delegate requires at least one delegation");
     }
 
+    const sessionPDA = await this.portal.deriveSessionPDA();
     const bufferRent = await this.rpc.getMinimumBalanceForRentExemption(0);
     const buffers = signers.delegations.map(() => Keypair.generate());
     const createBufferIxs = signers.delegations.map((delegation, index) =>
@@ -571,6 +613,7 @@ export class NorthStarSDK {
     const keys = [
       { pubkey: user, isSigner: true, isWritable: true },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: sessionPDA, isSigner: false, isWritable: false },
     ];
     for (let i = 0; i < signers.delegations.length; i++) {
       const delegation = signers.delegations[i];
@@ -626,15 +669,20 @@ export class NorthStarSDK {
       sessionPDA,
       recipient,
     );
+    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
+      sessionPDA,
+      recipient,
+    );
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
         { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: sessionPDA, isSigner: false, isWritable: true },
+        { pubkey: sessionPDA, isSigner: false, isWritable: false },
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
         { pubkey: recipient, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: withdrawalSinkPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(
         this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
@@ -670,6 +718,7 @@ export class NorthStarSDK {
     const delegatedAccount = signers.delegatedAccountSigner.publicKey;
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+    const sessionPDA = await this.portal.deriveSessionPDA();
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -683,6 +732,7 @@ export class NorthStarSDK {
         { pubkey: ownerProgramId, isSigner: false, isWritable: false },
         { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: sessionPDA, isSigner: false, isWritable: false },
       ],
       data: Buffer.from(this.portal.encodeUndelegate()),
     });

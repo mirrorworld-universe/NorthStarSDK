@@ -184,20 +184,20 @@ await sdk.openSession(
   signTransaction,
   signers,                 // SessionV1Signers
   options?,
+  openSessionConfig?,      // { validator?: PublicKey; settlementIntervalSlots?: number }
 );
 ```
 
 **`SessionV1Signers`**: `{ feePayerSigner?: Keypair }`  
-If `feePayerSigner` is omitted, the fee payer is `user`.
+If `feePayerSigner` is omitted, the fee payer is `user`. `openSessionConfig.validator` defaults to `user`; `settlementIntervalSlots` defaults to `10`.
 
 ### `closeSession`
 
-Close the session for the given `gridId`.
+Close the active global session.
 
 ```typescript
 await sdk.closeSession(
   user,
-  gridId,
   signTransaction,
   signers,                 // SessionV1Signers
   options?,
@@ -208,22 +208,32 @@ If `feePayerSigner` is passed, its public key must match the fee payer or an err
 
 ### `depositFee`
 
-Deposit `lamports` into a user’s session.
+Deposit `lamports` into a user’s session. The SDK also passes the recipient withdrawal-sink PDA so ER withdrawal transfers have a rent-funded destination.
 
 ```typescript
 await sdk.depositFee(
   user,                    // depositor (signing account)
-  sessionOwner,            // session owner PublicKey
-  gridId,
   lamports,                // number
   signTransaction,
   signers,                 // DepositFeeV1Signers
   options?,
+  recipient?,              // optional, defaults to user
 );
 ```
 
 **`DepositFeeV1Signers`**: `{ depositorSigner?: Keypair; feePayerSigner?: Keypair }`  
 If omitted, signing is done by the wallet for `user`; locally you can sign with `depositorSigner` / `feePayerSigner` first, then hand off to the wallet.
+
+### `buildErSolWithdrawal`
+
+Build the ER transaction instruction that requests L1 SOL payout at next settlement.
+
+```typescript
+const ix = await sdk.buildErSolWithdrawal(user, lamports);
+// send ix to sdk.getEphemeralConnection(); not L1
+```
+
+Internally this is a system transfer from `user` to `withdrawal_sink(session, user)`.
 
 ### `delegate`
 
@@ -259,7 +269,7 @@ Revoke delegation.
 ```typescript
 await sdk.undelegate(
   user,
-  ownerProgramId,          // 必须等于 delegate 时传入的同一个 owner 程序
+  ownerProgramId,          // must match the owner program passed to delegate
   signTransaction,
   signers,                 // { delegatedAccountSigner, feePayerSigner? }
   options?,
@@ -274,11 +284,11 @@ Use when composing custom transactions or showing them in an external wallet:
 
 | Method | Returns |
 |------|------|
-| `buildOpenSession(signer, gridId, ttlSlots?, feeCap?)` | `{ instructions, feePayer, blockhash, lastValidBlockHeight }` |
-| `buildCloseSession(signer, gridId)` | same |
-| `buildDepositFee(signer, sessionOwner, gridId, lamports)` | same |
+| `buildOpenSession(signer, gridId, ttlSlots?, feeCap?, openSessionConfig?)` | `{ instructions, feePayer, blockhash, lastValidBlockHeight }` |
+| `buildCloseSession(signer)` | same |
+| `buildDepositFee(signer, lamports, recipient?)` | same |
 | `buildDelegate(signer, gridId, delegations)` | same, plus generated `buffers` |
-| `buildUndelegate(signer, delegatedAccount)` | same |
+| `buildUndelegate(signer, delegatedAccount, ownerProgramId)` | same |
 
 Here `instructions` is `TransactionInstruction[]`, and `feePayer` is `signer.publicKey`.
 
@@ -292,17 +302,18 @@ Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the config
 
 | Method | Seeds (conceptual) |
 |------|----------------|
-| `deriveSessionPDA(owner, gridId)` | `session` + owner + `gridId` (u64 LE) |
-| `deriveFeeVaultPDA(owner)` | `fee_vault` + owner |
+| `deriveSessionPDA()` | `session` |
+| `deriveFeeVaultPDA()` | `fee_vault` |
 | `deriveDelegationRecordPDA(delegatedAccount)` | `delegation` + delegatedAccount |
 | `deriveDepositReceiptPDA(session, recipient)` | `deposit_receipt` + session + recipient |
+| `deriveWithdrawalSinkPDA(session, recipient)` | `withdrawal_sink` + session + recipient |
 
 ### Instruction encoding (Borsh)
 
 | Method | Description |
 |------|------|
-| `encodeOpenSession({ gridId, ttlSlots, feeCap })` | variant 0 |
-| `encodeCloseSession({ gridId })` | variant 1 |
+| `encodeOpenSession({ gridId, ttlSlots, feeCap, validator, settlementIntervalSlots })` | variant 0 |
+| `encodeCloseSession()` | variant 1 |
 | `encodeDepositFee({ lamports })` | variant 2 |
 | `encodeDelegate({ gridId })` | variant 3 |
 | `encodeUndelegate()` | variant 4 |
@@ -316,7 +327,7 @@ After `getAccountInfo` returns `data: Uint8Array`:
 | `parseSession(data)` | Session state |
 | `parseFeeVault(data)` | FeeVault |
 | `parseDelegationRecord(data)` | DelegationRecord |
-| `parseDepositReceipt(data)` | DepositReceipt |
+| `parseDepositReceipt(data)` | DepositReceipt (`balance`, `withdrawn`) |
 
 You can combine with constants like `SESSION_DISCRIMINATOR` for type discrimination.
 
@@ -352,6 +363,8 @@ Plus `TransactionResult`, `TransactionOptions`, various `*V1Signers`, `WalletSig
 | Variable | Description |
 |------|------|
 | `PORTAL_PROGRAM_ID` | Portal program ID (Base58) |
+| `VALIDATOR_RPC` | L1/local validator RPC (default `http://localhost:8899`) |
+| `EPHEMERAL_ROLLUP_RPC` | ER RPC (default `http://localhost:8899`; ER health test is skipped by default) |
 | `TRANSFER_SOURCE_PRIVATE_KEY` | Funding private key Base58 (for test transfers) |
 
 Run unit tests (excluding integration):
