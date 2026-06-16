@@ -79,6 +79,7 @@ export type WalletSignTransaction = (
 ) => Promise<VersionedTransaction>;
 
 const SYSTEM_PROGRAM_ID = SystemProgram.programId;
+const MAX_DELEGATIONS_PER_PORTAL_DELEGATE_IX = 3;
 export const MEMO_PROGRAM_ID = new PublicKey(
   "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
 );
@@ -280,6 +281,61 @@ export class NorthStarSDK {
     return out;
   }
 
+  private async buildDelegateInstructions(
+    user: PublicKey,
+    gridId: number,
+    delegations: DelegateAccount[],
+    buffers: Keypair[],
+  ): Promise<TransactionInstruction[]> {
+    if (delegations.length !== buffers.length) {
+      throw new Error("delegate buffers must match delegations");
+    }
+
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const instructions: TransactionInstruction[] = [];
+    for (
+      let offset = 0;
+      offset < delegations.length;
+      offset += MAX_DELEGATIONS_PER_PORTAL_DELEGATE_IX
+    ) {
+      const keys = [
+        { pubkey: user, isSigner: true, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: sessionPDA, isSigner: false, isWritable: false },
+      ];
+      const chunk = delegations.slice(
+        offset,
+        offset + MAX_DELEGATIONS_PER_PORTAL_DELEGATE_IX,
+      );
+      for (let i = 0; i < chunk.length; i++) {
+        const delegationIndex = offset + i;
+        const delegation = chunk[i];
+        const delegatedAccount = delegation.delegatedAccountSigner.publicKey;
+        const delegationRecordPDA =
+          await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+        keys.push(
+          { pubkey: delegatedAccount, isSigner: true, isWritable: true },
+          { pubkey: delegation.ownerProgramId, isSigner: false, isWritable: false },
+          { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
+          {
+            pubkey: buffers[delegationIndex].publicKey,
+            isSigner: false,
+            isWritable: false,
+          },
+        );
+      }
+
+      instructions.push(
+        new TransactionInstruction({
+          programId: this.portalProgramId,
+          keys,
+          data: Buffer.from(this.portal.encodeDelegate({ gridId })),
+        }),
+      );
+    }
+    return instructions;
+  }
+
   /**
    * Local signers partial-sign first, then signTransaction (wallet), then on-chain confirmation.
    */
@@ -365,7 +421,6 @@ export class NorthStarSDK {
       throw new Error("delegate requires at least one delegation");
     }
 
-    const sessionPDA = await this.portal.deriveSessionPDA();
     const bufferRent = await this.rpc.getMinimumBalanceForRentExemption(0);
     const buffers = delegations.map(() => Keypair.generate());
     const createBufferIxs = delegations.map((delegation, index) =>
@@ -378,34 +433,17 @@ export class NorthStarSDK {
       }),
     );
 
-    const keys = [
-      { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: sessionPDA, isSigner: false, isWritable: false },
-    ];
-    for (let i = 0; i < delegations.length; i++) {
-      const delegation = delegations[i];
-      const delegatedAccount = delegation.delegatedAccountSigner.publicKey;
-      const delegationRecordPDA =
-        await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-      keys.push(
-        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
-        { pubkey: delegation.ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
-        { pubkey: buffers[i].publicKey, isSigner: false, isWritable: false },
-      );
-    }
-
-    const delegateIx = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys,
-      data: Buffer.from(this.portal.encodeDelegate({ gridId })),
-    });
+    const delegateIxs = await this.buildDelegateInstructions(
+      signer.publicKey,
+      gridId,
+      delegations,
+      buffers,
+    );
 
     const latestBlockhash = await this.rpc.getLatestBlockhash();
 
     return {
-      instructions: [...createBufferIxs, delegateIx],
+      instructions: [...createBufferIxs, ...delegateIxs],
       feePayer: signer.publicKey,
       blockhash: latestBlockhash.blockhash,
       lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
@@ -628,7 +666,6 @@ export class NorthStarSDK {
       throw new Error("delegate requires at least one delegation");
     }
 
-    const sessionPDA = await this.portal.deriveSessionPDA();
     const bufferRent = await this.rpc.getMinimumBalanceForRentExemption(0);
     const buffers = signers.delegations.map(() => Keypair.generate());
     const createBufferIxs = signers.delegations.map((delegation, index) =>
@@ -641,29 +678,12 @@ export class NorthStarSDK {
       }),
     );
 
-    const keys = [
-      { pubkey: user, isSigner: true, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: sessionPDA, isSigner: false, isWritable: false },
-    ];
-    for (let i = 0; i < signers.delegations.length; i++) {
-      const delegation = signers.delegations[i];
-      const delegatedAccount = delegation.delegatedAccountSigner.publicKey;
-      const delegationRecordPDA =
-        await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-      keys.push(
-        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
-        { pubkey: delegation.ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
-        { pubkey: buffers[i].publicKey, isSigner: false, isWritable: false },
-      );
-    }
-
-    const delegateIx = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys,
-      data: Buffer.from(this.portal.encodeDelegate({ gridId })),
-    });
+    const delegateIxs = await this.buildDelegateInstructions(
+      user,
+      gridId,
+      signers.delegations,
+      buffers,
+    );
 
     const feePayer = signers.feePayerSigner?.publicKey ?? user;
 
@@ -675,7 +695,7 @@ export class NorthStarSDK {
 
     const { signature } = await this.sendTxV1(
       feePayer,
-      [...createBufferIxs, delegateIx],
+      [...createBufferIxs, ...delegateIxs],
       signTransaction,
       localSigners,
       options,
