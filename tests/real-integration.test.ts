@@ -49,7 +49,7 @@ function accountDataToBytes(data: any): Uint8Array {
 }
 
 const EPHEMERAL_ROLLUP_RPC =
-  process.env.EPHEMERAL_ROLLUP_RPC ?? "http://localhost:8899";
+  process.env.EPHEMERAL_ROLLUP_RPC ?? "http://localhost:8910";
 const VALIDATOR_RPC = process.env.VALIDATOR_RPC ?? "http://localhost:8899";
 
 function getPortalProgramId(): PublicKey {
@@ -148,6 +148,7 @@ describe("Real Integration Tests", () => {
   let portalUser: Keypair;
   let delegatedAccount: Keypair;
   let closeSessionOwner: Keypair;
+  let withdrawalL1Recipient: PublicKey;
   let validatorIdentity: PublicKey;
   const gridId = 1;
 
@@ -177,11 +178,13 @@ describe("Real Integration Tests", () => {
     // portalUser = Keypair.generate();
     delegatedAccount = Keypair.generate();
     closeSessionOwner = Keypair.generate();
+    withdrawalL1Recipient = Keypair.generate().publicKey;
 
     console.log("\n=== Test Setup ===");
     console.log("Portal owner:", portalUser.publicKey.toBase58());
     console.log("Delegated account:", delegatedAccount.publicKey.toBase58());
     console.log("Close-session owner:", closeSessionOwner.publicKey.toBase58());
+    console.log("Withdrawal L1 recipient:", withdrawalL1Recipient.toBase58());
 
     
 
@@ -211,6 +214,15 @@ describe("Real Integration Tests", () => {
         200_000_000n,
       );
       console.log("✓ Transferred 2 SOL to close-session owner");
+
+      await transferLamportsFromFunding(
+        sdk,
+        rpc,
+        fundingSigner,
+        withdrawalL1Recipient,
+        2_000_000n,
+      );
+      console.log("✓ Pre-funded withdrawal L1 recipient without its signature");
 
       await sleep(500);
 
@@ -400,21 +412,23 @@ describe("Real Integration Tests", () => {
       portalUser.publicKey,
     );
     const sinkBefore = await erRpc.getBalance(withdrawalSinkPDA, "processed");
-    const l1BalanceBefore = await rpc.getBalance(portalUser.publicKey);
+    const l1BalanceBefore = await rpc.getBalance(withdrawalL1Recipient);
     const depositReceiptPDA = await sdk.portal.deriveDepositReceiptPDA(
       sessionPDA,
       portalUser.publicKey,
     );
     const withdrawLamports = 1_000_000;
-    const ix = await sdk.buildErSolWithdrawal(
-      portalUser.publicKey,
-      withdrawLamports,
-    );
+    const instructions = await sdk.buildErSolWithdrawalInstructions({
+      erSource: portalUser.publicKey,
+      l1Recipient: withdrawalL1Recipient,
+      lamports: withdrawLamports,
+      sessionPDA,
+    });
     const { blockhash } = await erRpc.getLatestBlockhash("processed");
     const messageV0 = new TransactionMessage({
       payerKey: portalUser.publicKey,
       recentBlockhash: blockhash,
-      instructions: [ix],
+      instructions,
     }).compileToV0Message();
     const tx = new VersionedTransaction(messageV0);
     tx.sign([portalUser]);
@@ -439,12 +453,13 @@ describe("Real Integration Tests", () => {
         accountDataToBytes(receiptInfo.data),
       );
       settledReceiptWithdrawn = receiptState.withdrawn;
-      l1BalanceAfterSettlement = await rpc.getBalance(portalUser.publicKey);
+      l1BalanceAfterSettlement = await rpc.getBalance(withdrawalL1Recipient);
       if (settledReceiptWithdrawn >= BigInt(withdrawLamports)) break;
     }
 
     expect(settledReceiptWithdrawn).toBeGreaterThanOrEqual(BigInt(withdrawLamports));
     expect(l1BalanceAfterSettlement).toBeGreaterThan(l1BalanceBefore);
+    expect(withdrawalL1Recipient.equals(portalUser.publicKey)).toBe(false);
     console.log(
       "✓ L1 payout observed:",
       l1BalanceAfterSettlement - l1BalanceBefore,
