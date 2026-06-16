@@ -15,7 +15,7 @@ export interface OpenSessionParams {
   gridId: number | bigint;
   ttlSlots: number | bigint;
   feeCap: number | bigint;
-  validator?: PublicKey;
+  validator: PublicKey;
   settlementIntervalSlots?: number | bigint;
 }
 
@@ -325,10 +325,6 @@ export class PortalProgram {
    * Encode OpenSession instruction data (borsh serialized)
    */
   static encodeOpenSession(params: OpenSessionParams): Uint8Array {
-    if (!params.validator) {
-      throw new Error("OpenSession validator is required");
-    }
-
     const data = new Uint8Array(1 + 8 + 8 + 8 + 32 + 8);
     data[0] = 0;
     data.set(toU64LE(params.gridId), 1);
