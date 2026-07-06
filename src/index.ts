@@ -14,6 +14,10 @@ import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
 import { AccountResolver } from "./readers/AccountResolver";
 import { PortalProgram, WITHDRAWAL_SINK } from "./programs/portal";
 import {
+  TOKEN_BRIDGE_PROGRAM_ID,
+  TokenBridgeProgram,
+} from "./programs/tokenBridge";
+import {
   getVersionedTxSignatureBase58,
   sendRawVersionedTransaction,
   signVersionedTransaction,
@@ -25,6 +29,10 @@ export {
   signVersionedTransaction,
   toPublicKey,
 } from "./solana/kitCompat";
+export {
+  TOKEN_BRIDGE_PROGRAM_ID,
+  TokenBridgeProgram,
+} from "./programs/tokenBridge";
 
 /** @solana/web3.js Keypair used wherever a transaction signer is required. */
 export type TransactionSigner = Keypair;
@@ -107,11 +115,13 @@ export class NorthStarSDK {
   private config: NorthStarConfig;
   private portalProgramId: PublicKey;
   public readonly portal: PortalProgram;
+  public readonly tokenBridge: TokenBridgeProgram;
 
   constructor(config: NorthStarConfig) {
     this.config = config;
     this.portalProgramId = toPublicKey(config.portalProgramId);
     this.portal = new PortalProgram(this.portalProgramId);
+    this.tokenBridge = new TokenBridgeProgram();
 
     const solanaRpc = config.customEndpoints.solana;
     this.rpc = new Connection(solanaRpc, "confirmed");
@@ -174,6 +184,227 @@ export class NorthStarSDK {
 
   getPortalProgramId(): PublicKey {
     return this.portalProgramId;
+  }
+
+  async buildRegisterSessionBridgeInstruction(params: {
+    authority: PublicKey;
+    session: PublicKey;
+    mint: PublicKey;
+    vault?: PublicKey;
+    bridgeProgram?: PublicKey;
+    tokenProgram: PublicKey;
+  }): Promise<TransactionInstruction> {
+    const bridgeProgram = params.bridgeProgram ?? TOKEN_BRIDGE_PROGRAM_ID;
+    const sessionBridge = await this.portal.deriveSessionBridgePDA(
+      params.session,
+      params.mint,
+    );
+    const vault = params.vault ?? this.tokenBridge.deriveVaultPDA(sessionBridge);
+    return new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: params.authority, isSigner: true, isWritable: true },
+        { pubkey: params.session, isSigner: false, isWritable: false },
+        { pubkey: sessionBridge, isSigner: false, isWritable: true },
+        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(
+        this.portal.encodeRegisterSessionBridge({
+          mint: params.mint,
+          bridgeProgram,
+          vault,
+          tokenProgram: params.tokenProgram,
+        }),
+      ),
+    });
+  }
+
+  async buildInitializeTokenVaultInstruction(params: {
+    payer: PublicKey;
+    sessionBridge: PublicKey;
+    vaultTokenAccount: PublicKey;
+  }): Promise<TransactionInstruction> {
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.payer, isSigner: true, isWritable: true },
+        {
+          pubkey: this.tokenBridge.deriveVaultPDA(params.sessionBridge),
+          isSigner: false,
+          isWritable: true,
+        },
+        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        { pubkey: params.vaultTokenAccount, isSigner: false, isWritable: false },
+        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(this.tokenBridge.encodeInitializeVault()),
+    });
+  }
+
+  async buildInitializeErTokenAccountInstruction(params: {
+    payer: PublicKey;
+    sessionBridge: PublicKey;
+    owner: PublicKey;
+  }): Promise<TransactionInstruction> {
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.payer, isSigner: true, isWritable: true },
+        {
+          pubkey: this.tokenBridge.deriveErTokenAccountPDA(
+            params.sessionBridge,
+            params.owner,
+          ),
+          isSigner: false,
+          isWritable: true,
+        },
+        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(
+        this.tokenBridge.encodeInitializeErTokenAccount(params.owner),
+      ),
+    });
+  }
+
+  buildTokenBridgeDepositInstruction(params: {
+    owner: PublicKey;
+    vault: PublicKey;
+    erTokenAccount: PublicKey;
+    sessionBridge: PublicKey;
+    sourceTokenAccount: PublicKey;
+    vaultTokenAccount: PublicKey;
+    mint: PublicKey;
+    tokenProgram: PublicKey;
+    amount: number | bigint;
+    decimals: number;
+  }): TransactionInstruction {
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.owner, isSigner: true, isWritable: false },
+        { pubkey: params.vault, isSigner: false, isWritable: false },
+        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        { pubkey: params.sourceTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: params.vaultTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: params.mint, isSigner: false, isWritable: false },
+        { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(
+        this.tokenBridge.encodeDeposit(params.amount, params.decimals),
+      ),
+    });
+  }
+
+  buildTokenBridgeTransferInstruction(params: {
+    authority: PublicKey;
+    sourceErTokenAccount: PublicKey;
+    destinationErTokenAccount: PublicKey;
+    amount: number | bigint;
+  }): TransactionInstruction {
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.authority, isSigner: true, isWritable: false },
+        { pubkey: params.sourceErTokenAccount, isSigner: false, isWritable: true },
+        {
+          pubkey: params.destinationErTokenAccount,
+          isSigner: false,
+          isWritable: true,
+        },
+      ],
+      data: Buffer.from(this.tokenBridge.encodeTransfer(params.amount)),
+    });
+  }
+
+  buildTokenBridgeWithdrawInstruction(params: {
+    owner: PublicKey;
+    vault: PublicKey;
+    erTokenAccount: PublicKey;
+    sessionBridge: PublicKey;
+    vaultTokenAccount: PublicKey;
+    destinationTokenAccount: PublicKey;
+    mint: PublicKey;
+    tokenProgram: PublicKey;
+    amount: number | bigint;
+    decimals: number;
+  }): TransactionInstruction {
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.owner, isSigner: true, isWritable: false },
+        { pubkey: params.vault, isSigner: false, isWritable: false },
+        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        { pubkey: params.vaultTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: params.destinationTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: params.mint, isSigner: false, isWritable: false },
+        { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(
+        this.tokenBridge.encodeWithdraw(params.amount, params.decimals),
+      ),
+    });
+  }
+
+  buildDelegateErTokenAccountInstruction(params: {
+    payer: PublicKey;
+    erTokenAccount: PublicKey;
+    sessionBridge: PublicKey;
+    session: PublicKey;
+    gridId: number | bigint;
+  }): TransactionInstruction {
+    const [delegationRecord] = PublicKey.findProgramAddressSync(
+      [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
+      this.portalProgramId,
+    );
+    const buffer = this.tokenBridge.deriveBufferPDA(params.erTokenAccount);
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.payer, isSigner: true, isWritable: true },
+        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: this.tokenBridge.programId, isSigner: false, isWritable: false },
+        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        { pubkey: params.session, isSigner: false, isWritable: false },
+        { pubkey: delegationRecord, isSigner: false, isWritable: true },
+        { pubkey: buffer, isSigner: false, isWritable: true },
+        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(this.tokenBridge.encodeDelegateErTokenAccount(params.gridId)),
+    });
+  }
+
+  buildUndelegateErTokenAccountInstruction(params: {
+    authority: PublicKey;
+    erTokenAccount: PublicKey;
+    session: PublicKey;
+  }): TransactionInstruction {
+    const [delegationRecord] = PublicKey.findProgramAddressSync(
+      [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
+      this.portalProgramId,
+    );
+    const buffer = this.tokenBridge.deriveBufferPDA(params.erTokenAccount);
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.authority, isSigner: true, isWritable: true },
+        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: this.tokenBridge.programId, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        { pubkey: params.session, isSigner: false, isWritable: false },
+        { pubkey: delegationRecord, isSigner: false, isWritable: true },
+        { pubkey: buffer, isSigner: false, isWritable: true },
+        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(this.tokenBridge.encodeUndelegateErTokenAccount()),
+    });
   }
 
   /** Get the ER node's L1 sync cursor. */
