@@ -26,6 +26,10 @@ export interface DepositFeeParams {
   lamports: bigint;
 }
 
+export interface StartWithdrawalParams {
+  lamports: bigint;
+}
+
 /**
  * Delegate instruction parameters
  */
@@ -62,6 +66,16 @@ class DelegateInstruction {
 
 @variant(4)
 class UndelegateInstruction { }
+
+@variant(13)
+class StartWithdrawalInstruction {
+  @field({ type: "u64" })
+  lamports!: bigint;
+
+  constructor(params: StartWithdrawalParams) {
+    this.lamports = params.lamports;
+  }
+}
 
 /**
  * Session state account
@@ -139,6 +153,9 @@ export const DEPOSIT_RECEIPT_DISCRIMINATOR = 4;
 
 export const SESSION_LEN = 219;
 export const DEPOSIT_RECEIPT_LEN = 82;
+export const WITHDRAWAL_SINK = new PublicKey(
+  "NS19999999999999999999999999999999999999999",
+);
 
 function assertAccountDataLength(
   data: Uint8Array,
@@ -191,15 +208,8 @@ export class PortalProgram {
     );
   }
 
-  async deriveWithdrawalSinkPDA(
-    session: PublicKey,
-    recipient: PublicKey,
-  ): Promise<PublicKey> {
-    return PortalProgram.deriveWithdrawalSinkPDA(
-      session,
-      recipient,
-      this.defaultProgramId,
-    );
+  withdrawalSink(): PublicKey {
+    return WITHDRAWAL_SINK;
   }
 
   encodeOpenSession(params: OpenSessionParams): Uint8Array {
@@ -212,6 +222,10 @@ export class PortalProgram {
 
   encodeDepositFee(params: DepositFeeParams): Uint8Array {
     return PortalProgram.encodeDepositFee(params);
+  }
+
+  encodeStartWithdrawal(params: StartWithdrawalParams): Uint8Array {
+    return PortalProgram.encodeStartWithdrawal(params);
   }
 
   encodeDelegate(params: DelegateParams): Uint8Array {
@@ -301,25 +315,6 @@ export class PortalProgram {
     return pda;
   }
 
-  /**
-   * Derive ER withdrawal sink PDA address.
-   * Seeds: ["withdrawal_sink", session, recipient]
-   */
-  static async deriveWithdrawalSinkPDA(
-    session: PublicKey,
-    recipient: PublicKey,
-    programId: PublicKey,
-  ): Promise<PublicKey> {
-    const [pda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("withdrawal_sink", "utf8"),
-        session.toBuffer(),
-        recipient.toBuffer(),
-      ],
-      programId,
-    );
-    return pda;
-  }
 
   /**
    * Encode OpenSession instruction data (borsh serialized)
@@ -347,6 +342,10 @@ export class PortalProgram {
    */
   static encodeDepositFee(params: DepositFeeParams): Uint8Array {
     return serialize(new DepositFeeInstruction(params));
+  }
+
+  static encodeStartWithdrawal(params: StartWithdrawalParams): Uint8Array {
+    return serialize(new StartWithdrawalInstruction(params));
   }
 
   /**

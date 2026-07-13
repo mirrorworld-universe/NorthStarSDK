@@ -2,6 +2,7 @@ import {
   Connection,
   Keypair,
   PublicKey,
+  SYSVAR_CLOCK_PUBKEY,
   SystemProgram,
   TransactionInstruction,
   TransactionMessage,
@@ -11,7 +12,7 @@ import bs58 from "bs58";
 import { AccountInfo, Address, NorthStarConfig, NorthStarSyncStatus } from "./types";
 import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
 import { AccountResolver } from "./readers/AccountResolver";
-import { PortalProgram } from "./programs/portal";
+import { PortalProgram, WITHDRAWAL_SINK } from "./programs/portal";
 import {
   getVersionedTxSignatureBase58,
   sendRawVersionedTransaction,
@@ -80,15 +81,11 @@ export type WalletSignTransaction = (
 
 const SYSTEM_PROGRAM_ID = SystemProgram.programId;
 const MAX_DELEGATIONS_PER_PORTAL_DELEGATE_IX = 3;
-export const MEMO_PROGRAM_ID = new PublicKey(
-  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
-);
 
 export interface ErSolWithdrawalParams {
   erSource: PublicKey;
   l1Recipient: PublicKey;
   lamports: number;
-  sessionPDA?: PublicKey;
 }
 
 export function encodeSystemProgramAssignData(newProgramOwner: PublicKey): Uint8Array {
@@ -466,10 +463,6 @@ export class NorthStarSDK {
       sessionPDA,
       recipient,
     );
-    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
-      sessionPDA,
-      recipient,
-    );
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -479,7 +472,6 @@ export class NorthStarSDK {
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
         { pubkey: recipient, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: withdrawalSinkPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(
         this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
@@ -500,24 +492,20 @@ export class NorthStarSDK {
     erSource,
     l1Recipient,
     lamports,
-    sessionPDA,
   }: ErSolWithdrawalParams): Promise<TransactionInstruction[]> {
-    const resolvedSessionPDA = sessionPDA ?? (await this.portal.deriveSessionPDA());
-    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
-      resolvedSessionPDA,
-      erSource,
-    );
-
     return [
-      SystemProgram.transfer({
-        fromPubkey: erSource,
-        toPubkey: withdrawalSinkPDA,
-        lamports,
-      }),
       new TransactionInstruction({
-        programId: MEMO_PROGRAM_ID,
-        keys: [],
-        data: Buffer.from(l1Recipient.toBase58(), "utf8"),
+        programId: this.portalProgramId,
+        keys: [
+          { pubkey: erSource, isSigner: true, isWritable: true },
+          { pubkey: l1Recipient, isSigner: false, isWritable: false },
+          { pubkey: WITHDRAWAL_SINK, isSigner: false, isWritable: true },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
+        ],
+        data: Buffer.from(
+          this.portal.encodeStartWithdrawal({ lamports: BigInt(lamports) }),
+        ),
       }),
     ];
   }
@@ -720,10 +708,6 @@ export class NorthStarSDK {
       sessionPDA,
       recipient,
     );
-    const withdrawalSinkPDA = await this.portal.deriveWithdrawalSinkPDA(
-      sessionPDA,
-      recipient,
-    );
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -733,7 +717,6 @@ export class NorthStarSDK {
         { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
         { pubkey: recipient, isSigner: false, isWritable: false },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: withdrawalSinkPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(
         this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
