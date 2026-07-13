@@ -208,7 +208,7 @@ If `feePayerSigner` is passed, its public key must match the fee payer or an err
 
 ### `depositFee`
 
-Deposit `lamports` into a user’s session. The SDK also passes the recipient withdrawal-sink PDA so ER withdrawal transfers have a rent-funded destination.
+Deposit `lamports` into a user's session. Withdrawals use the fixed `NS19999999999999999999999999999999999999999` sink.
 
 ```typescript
 await sdk.depositFee(
@@ -233,7 +233,7 @@ const ix = await sdk.buildErSolWithdrawal(user, lamports);
 // send ix to sdk.getEphemeralConnection(); not L1
 ```
 
-Internally this is a system transfer from `user` to `withdrawal_sink(session, user)`.
+Internally this invokes Portal `StartWithdrawal`, which transfers ER SOL to fixed sink and emits withdrawal event for settlement.
 
 ### `delegate`
 
@@ -306,7 +306,7 @@ Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the config
 | `deriveFeeVaultPDA()` | `fee_vault` |
 | `deriveDelegationRecordPDA(delegatedAccount)` | `delegation` + delegatedAccount |
 | `deriveDepositReceiptPDA(session, recipient)` | `deposit_receipt` + session + recipient |
-| `deriveWithdrawalSinkPDA(session, recipient)` | `withdrawal_sink` + session + recipient |
+| `withdrawalSink()` | fixed `NS19999999999999999999999999999999999999999` |
 
 ### Instruction encoding (Borsh)
 
@@ -317,6 +317,7 @@ Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the config
 | `encodeDepositFee({ lamports })` | variant 2 |
 | `encodeDelegate({ gridId })` | variant 3 |
 | `encodeUndelegate()` | variant 4 |
+| `encodeStartWithdrawal({ lamports })` | variant 13 |
 
 ### Account data parsing
 

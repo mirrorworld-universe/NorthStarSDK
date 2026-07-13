@@ -22,6 +22,7 @@ import {
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { NorthStarSDK, encodeSystemProgramAssignData } from "../src";
+import { WITHDRAWAL_SINK } from "../src/programs/portal";
 import { signVersionedTransaction } from "../src/solana/kitCompat";
 import { config } from "dotenv";
 config();
@@ -366,10 +367,6 @@ describe("Real Integration Tests", () => {
       sessionPDA,
       portalUser.publicKey,
     );
-    const withdrawalSinkPDA = await sdk.portal.deriveWithdrawalSinkPDA(
-      sessionPDA,
-      portalUser.publicKey,
-    );
 
     await sdk.depositFee(
       portalUser.publicKey,
@@ -396,22 +393,17 @@ describe("Real Integration Tests", () => {
     );
     expect(receiptState.withdrawn).toBe(0n);
     expect(BigInt(receiptInfo!.lamports)).toBeGreaterThanOrEqual(4_000_000n);
-    const sinkInfo = await rpc.getAccountInfo(withdrawalSinkPDA);
-    expect(sinkInfo).not.toBeNull();
     console.log("✓ Deposit receipt lamports:", receiptInfo!.lamports);
   }, 60000);
 
 
-  test("Step 4: ER SOL withdrawal - should transfer to withdrawal sink", async () => {
+  test("Step 4: ER SOL withdrawal - should invoke StartWithdrawal", async () => {
     console.log("\n=== Step 4: ER SOL Withdrawal ===");
 
     const erRpc = sdk.getEphemeralRpc();
     const sessionPDA = await sdk.portal.deriveSessionPDA();
-    const withdrawalSinkPDA = await sdk.portal.deriveWithdrawalSinkPDA(
-      sessionPDA,
-      portalUser.publicKey,
-    );
-    const sinkBefore = await erRpc.getBalance(withdrawalSinkPDA, "processed");
+    const withdrawalSink = WITHDRAWAL_SINK;
+    const sinkBefore = await erRpc.getBalance(withdrawalSink, "processed");
     const l1BalanceBefore = await rpc.getBalance(withdrawalL1Recipient);
     const depositReceiptPDA = await sdk.portal.deriveDepositReceiptPDA(
       sessionPDA,
@@ -422,7 +414,6 @@ describe("Real Integration Tests", () => {
       erSource: portalUser.publicKey,
       l1Recipient: withdrawalL1Recipient,
       lamports: withdrawLamports,
-      sessionPDA,
     });
     const { blockhash } = await erRpc.getLatestBlockhash("processed");
     const messageV0 = new TransactionMessage({
@@ -439,7 +430,7 @@ describe("Real Integration Tests", () => {
     console.log("ER withdrawal signature:", signature);
     await sleep(1500);
 
-    const sinkAfter = await erRpc.getBalance(withdrawalSinkPDA, "processed");
+    const sinkAfter = await erRpc.getBalance(withdrawalSink, "processed");
     expect(sinkAfter - sinkBefore).toBe(withdrawLamports);
     console.log("✓ Withdrawal sink credited:", sinkAfter - sinkBefore);
 
