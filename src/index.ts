@@ -800,6 +800,8 @@ export class NorthStarSDK {
   }> {
     const sessionPDA = await this.portal.deriveSessionPDA();
     const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
+    const checkpointCursorPDA =
+      await this.portal.deriveCheckpointCursorPDA(sessionPDA);
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -808,6 +810,7 @@ export class NorthStarSDK {
         { pubkey: sessionPDA, isSigner: false, isWritable: true },
         { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: checkpointCursorPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(this.portal.encodeCloseSession()),
     });
@@ -1028,6 +1031,8 @@ export class NorthStarSDK {
   ): Promise<TransactionResult> {
     const sessionPDA = await this.portal.deriveSessionPDA();
     const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
+    const checkpointCursorPDA =
+      await this.portal.deriveCheckpointCursorPDA(sessionPDA);
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -1036,6 +1041,7 @@ export class NorthStarSDK {
         { pubkey: sessionPDA, isSigner: false, isWritable: true },
         { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: checkpointCursorPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(this.portal.encodeCloseSession()),
     });

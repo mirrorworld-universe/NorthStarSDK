@@ -210,6 +210,13 @@ export class PortalProgram {
     return PortalProgram.deriveFeeVaultPDA(this.defaultProgramId);
   }
 
+  async deriveCheckpointCursorPDA(session: PublicKey): Promise<PublicKey> {
+    return PortalProgram.deriveCheckpointCursorPDA(
+      session,
+      this.defaultProgramId,
+    );
+  }
+
   async deriveDelegationRecordPDA(delegatedAccount: PublicKey): Promise<PublicKey> {
     return PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
@@ -314,6 +321,21 @@ export class PortalProgram {
   ): Promise<PublicKey> {
     const [pda] = PublicKey.findProgramAddressSync(
       [Buffer.from("fee_vault", "utf8")],
+      programId,
+    );
+    return pda;
+  }
+
+  /**
+   * Derive CheckpointCursor PDA address.
+   * Seeds: ["checkpoint_cursor", session]
+   */
+  static async deriveCheckpointCursorPDA(
+    session: PublicKey,
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("checkpoint_cursor", "utf8"), session.toBuffer()],
       programId,
     );
     return pda;

@@ -97,6 +97,33 @@ describe("Portal SDK encoding and account layout", () => {
     expect(deposit.instructions[0].keys[1].isWritable).toBe(false);
   });
 
+  test("builds CloseSession with checkpoint cursor", async () => {
+    const sdk = sdkWithMockRpc();
+    const authority = Keypair.generate();
+    const sessionPDA = await sdk.portal.deriveSessionPDA();
+    const checkpointCursorPDA =
+      await sdk.portal.deriveCheckpointCursorPDA(sessionPDA);
+    const close = await sdk.buildCloseSession(authority);
+
+    expect(close.instructions[0].keys).toHaveLength(5);
+    expect(close.instructions[0].keys[4].pubkey.equals(checkpointCursorPDA)).toBe(
+      true,
+    );
+    expect(close.instructions[0].keys[4].isWritable).toBe(true);
+  });
+
+  test("encodes RegisterSessionBridge with current Portal tag", () => {
+    const data = PortalProgram.encodeRegisterSessionBridge({
+      mint: Keypair.generate().publicKey,
+      bridgeProgram: Keypair.generate().publicKey,
+      vault: Keypair.generate().publicKey,
+      tokenProgram: Keypair.generate().publicKey,
+    });
+
+    expect(data).toHaveLength(129);
+    expect(data[0]).toBe(22);
+  });
+
   test("parses current 219-byte Session layout", () => {
     const authority = Keypair.generate().publicKey;
     const validator = Keypair.generate().publicKey;
