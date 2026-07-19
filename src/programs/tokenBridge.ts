@@ -11,6 +11,8 @@ export interface TokenVault {
   mint: PublicKey;
   vaultTokenAccount: PublicKey;
   tokenProgram: PublicKey;
+  deposited: bigint;
+  withdrawn: bigint;
   bump: number;
 }
 
@@ -25,7 +27,7 @@ export interface ErTokenAccount {
 
 export const TOKEN_VAULT_DISCRIMINATOR = 1;
 export const ER_TOKEN_ACCOUNT_DISCRIMINATOR = 2;
-export const TOKEN_VAULT_LEN = 130;
+export const TOKEN_VAULT_LEN = 146;
 export const ER_TOKEN_ACCOUNT_LEN = 106;
 
 function assertAccountDataLength(
@@ -63,6 +65,17 @@ export class TokenBridgeProgram {
     );
   }
 
+  deriveDepositReceiptPDA(
+    sessionBridge: PublicKey,
+    erTokenAccount: PublicKey,
+  ): PublicKey {
+    return TokenBridgeProgram.deriveDepositReceiptPDA(
+      sessionBridge,
+      erTokenAccount,
+      this.programId,
+    );
+  }
+
   deriveBufferPDA(erTokenAccount: PublicKey): PublicKey {
     return TokenBridgeProgram.deriveBufferPDA(erTokenAccount, this.programId);
   }
@@ -85,6 +98,10 @@ export class TokenBridgeProgram {
 
   encodeWithdraw(amount: number | bigint, decimals: number): Uint8Array {
     return TokenBridgeProgram.encodeWithdraw(amount, decimals);
+  }
+
+  encodeStartWithdrawal(amount: number | bigint, decimals: number): Uint8Array {
+    return TokenBridgeProgram.encodeStartWithdrawal(amount, decimals);
   }
 
   encodeDelegateErTokenAccount(gridId: number | bigint): Uint8Array {
@@ -121,6 +138,22 @@ export class TokenBridgeProgram {
   ): PublicKey {
     const [pda] = PublicKey.findProgramAddressSync(
       [Buffer.from("er_token"), sessionBridge.toBuffer(), owner.toBuffer()],
+      programId,
+    );
+    return pda;
+  }
+
+  static deriveDepositReceiptPDA(
+    sessionBridge: PublicKey,
+    erTokenAccount: PublicKey,
+    programId: PublicKey = TOKEN_BRIDGE_PROGRAM_ID,
+  ): PublicKey {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("token_deposit"),
+        sessionBridge.toBuffer(),
+        erTokenAccount.toBuffer(),
+      ],
       programId,
     );
     return pda;
@@ -171,6 +204,17 @@ export class TokenBridgeProgram {
     return data;
   }
 
+  static encodeStartWithdrawal(
+    amount: number | bigint,
+    decimals: number,
+  ): Uint8Array {
+    const data = new Uint8Array(1 + 8 + 1);
+    data[0] = 7;
+    data.set(toU64LE(amount), 1);
+    data[9] = decimals;
+    return data;
+  }
+
   static encodeDelegateErTokenAccount(gridId: number | bigint): Uint8Array {
     const data = new Uint8Array(1 + 8);
     data[0] = 5;
@@ -190,7 +234,9 @@ export class TokenBridgeProgram {
       mint: new PublicKey(data.slice(33, 65)),
       vaultTokenAccount: new PublicKey(data.slice(65, 97)),
       tokenProgram: new PublicKey(data.slice(97, 129)),
-      bump: data[129],
+      deposited: readU64LE(data, 129),
+      withdrawn: readU64LE(data, 137),
+      bump: data[145],
     };
   }
 

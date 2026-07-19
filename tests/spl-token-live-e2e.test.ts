@@ -142,6 +142,26 @@ async function waitForErAmount(
   );
 }
 
+async function waitForTokenAmount(
+  connection: Connection,
+  tokenAccount: PublicKey,
+  expected: bigint,
+) {
+  for (let i = 0; i < 60; i++) {
+    const state = await getAccount(
+      connection,
+      tokenAccount,
+      "confirmed",
+      TOKEN_PROGRAM_ID,
+    );
+    if (state.amount === expected) return state;
+    await sleep(500);
+  }
+  throw new Error(
+    `Timed out waiting for token account ${tokenAccount.toBase58()} amount ${expected}`,
+  );
+}
+
 describe("SPL token bridge live E2E", () => {
   test("mint on L1, deposit to ER, transfer on ER, settle and withdraw on L1", async () => {
     const sdk = new NorthStarSDK({
@@ -338,28 +358,6 @@ describe("SPL token bridge live E2E", () => {
       [alice],
     );
 
-    await sendTx(
-      sdk,
-      rpc,
-      alice.publicKey,
-      [
-        sdk.buildTokenBridgeDepositInstruction({
-          owner: alice.publicKey,
-          vault,
-          erTokenAccount: aliceEr,
-          sessionBridge,
-          sourceTokenAccount: aliceToken,
-          vaultTokenAccount: vaultToken,
-          mint: mint.publicKey,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          amount: 600_000_000n,
-          decimals: DECIMALS,
-        }),
-      ],
-      [alice],
-    );
-    await waitForErAmount(sdk, rpc, aliceEr, 600_000_000n, "confirmed");
-
     await assignAccountOwnerAndConfirm(
       sdk,
       rpc,
@@ -405,8 +403,30 @@ describe("SPL token bridge live E2E", () => {
       [alice],
     );
 
-    await waitForErAmount(sdk, erRpc, aliceEr, 600_000_000n);
+    await waitForErAmount(sdk, erRpc, aliceEr, 0n);
     await waitForErAmount(sdk, erRpc, bobEr, 0n);
+
+    await sendTx(
+      sdk,
+      rpc,
+      alice.publicKey,
+      [
+        sdk.buildTokenBridgeDepositInstruction({
+          owner: alice.publicKey,
+          vault,
+          erTokenAccount: aliceEr,
+          sessionBridge,
+          sourceTokenAccount: aliceToken,
+          vaultTokenAccount: vaultToken,
+          mint: mint.publicKey,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          amount: 600_000_000n,
+          decimals: DECIMALS,
+        }),
+      ],
+      [alice],
+    );
+    await waitForErAmount(sdk, erRpc, aliceEr, 600_000_000n);
 
     const erTransferSig = await sendErTx(
       erRpc,
@@ -425,8 +445,33 @@ describe("SPL token bridge live E2E", () => {
     await waitForErAmount(sdk, erRpc, aliceEr, 350_000_000n);
     await waitForErAmount(sdk, erRpc, bobEr, 250_000_000n);
 
-    await waitForErAmount(sdk, rpc, bobEr, 250_000_000n, "confirmed");
-    console.log("L1 settlement observed for Bob ER balance");
+    await sendErTx(
+      erRpc,
+      erFeePayer.publicKey,
+      [
+        sdk.buildTokenBridgeStartWithdrawalInstruction({
+          owner: bob.publicKey,
+          erTokenAccount: bobEr,
+          sessionBridge,
+          destinationTokenAccount: bobToken,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          amount: 200_000_000n,
+          decimals: DECIMALS,
+        }),
+      ],
+      [erFeePayer, bob],
+    );
+    await waitForErAmount(sdk, erRpc, bobEr, 50_000_000n);
+
+    const bobTokenAfter = await waitForTokenAmount(rpc, bobToken, 200_000_000n);
+    const vaultTokenAfter = await waitForTokenAmount(
+      rpc,
+      vaultToken,
+      400_000_000n,
+    );
+    expect(bobTokenAfter.amount).toBe(200_000_000n);
+    expect(vaultTokenAfter.amount).toBe(400_000_000n);
+    await waitForErAmount(sdk, rpc, bobEr, 50_000_000n, "confirmed");
 
     await sendTx(
       sdk,
@@ -441,38 +486,6 @@ describe("SPL token bridge live E2E", () => {
       ],
       [alice, bob],
     );
-
-    await sendTx(
-      sdk,
-      rpc,
-      alice.publicKey,
-      [
-        sdk.buildTokenBridgeWithdrawInstruction({
-          owner: bob.publicKey,
-          vault,
-          erTokenAccount: bobEr,
-          sessionBridge,
-          vaultTokenAccount: vaultToken,
-          destinationTokenAccount: bobToken,
-          mint: mint.publicKey,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          amount: 200_000_000n,
-          decimals: DECIMALS,
-        }),
-      ],
-      [alice, bob],
-    );
-
-    const bobTokenAfter = await getAccount(rpc, bobToken, "confirmed", TOKEN_PROGRAM_ID);
-    const vaultTokenAfter = await getAccount(
-      rpc,
-      vaultToken,
-      "confirmed",
-      TOKEN_PROGRAM_ID,
-    );
-    expect(bobTokenAfter.amount).toBe(200_000_000n);
-    expect(vaultTokenAfter.amount).toBe(400_000_000n);
-    await waitForErAmount(sdk, rpc, bobEr, 50_000_000n, "confirmed");
     console.log("Bob L1 token balance", bobTokenAfter.amount.toString());
   }, 300_000);
 });

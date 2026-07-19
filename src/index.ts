@@ -281,11 +281,19 @@ export class NorthStarSDK {
     amount: number | bigint;
     decimals: number;
   }): TransactionInstruction {
+    const depositReceipt = this.tokenBridge.deriveDepositReceiptPDA(
+      params.sessionBridge,
+      params.erTokenAccount,
+    );
+    const [delegationRecord] = PublicKey.findProgramAddressSync(
+      [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
+      this.portalProgramId,
+    );
     return new TransactionInstruction({
       programId: this.tokenBridge.programId,
       keys: [
-        { pubkey: params.owner, isSigner: true, isWritable: false },
-        { pubkey: params.vault, isSigner: false, isWritable: false },
+        { pubkey: params.owner, isSigner: true, isWritable: true },
+        { pubkey: params.vault, isSigner: false, isWritable: true },
         { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
         { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
         { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
@@ -293,6 +301,9 @@ export class NorthStarSDK {
         { pubkey: params.vaultTokenAccount, isSigner: false, isWritable: true },
         { pubkey: params.mint, isSigner: false, isWritable: false },
         { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
+        { pubkey: depositReceipt, isSigner: false, isWritable: true },
+        { pubkey: delegationRecord, isSigner: false, isWritable: false },
+        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
       ],
       data: Buffer.from(
         this.tokenBridge.encodeDeposit(params.amount, params.decimals),
@@ -321,6 +332,35 @@ export class NorthStarSDK {
     });
   }
 
+  buildTokenBridgeStartWithdrawalInstruction(params: {
+    owner: PublicKey;
+    erTokenAccount: PublicKey;
+    sessionBridge: PublicKey;
+    destinationTokenAccount: PublicKey;
+    tokenProgram: PublicKey;
+    amount: number | bigint;
+    decimals: number;
+  }): TransactionInstruction {
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.owner, isSigner: true, isWritable: false },
+        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        {
+          pubkey: params.destinationTokenAccount,
+          isSigner: false,
+          isWritable: false,
+        },
+        { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(
+        this.tokenBridge.encodeStartWithdrawal(params.amount, params.decimals),
+      ),
+    });
+  }
+
   buildTokenBridgeWithdrawInstruction(params: {
     owner: PublicKey;
     vault: PublicKey;
@@ -337,7 +377,7 @@ export class NorthStarSDK {
       programId: this.tokenBridge.programId,
       keys: [
         { pubkey: params.owner, isSigner: true, isWritable: false },
-        { pubkey: params.vault, isSigner: false, isWritable: false },
+        { pubkey: params.vault, isSigner: false, isWritable: true },
         { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
         { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
         { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
