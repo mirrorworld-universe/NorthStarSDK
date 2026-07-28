@@ -37,6 +37,13 @@ export interface DelegateParams {
   gridId: number | bigint;
 }
 
+export interface RegisterSessionBridgeParams {
+  mint: PublicKey;
+  bridgeProgram: PublicKey;
+  vault: PublicKey;
+  tokenProgram: PublicKey;
+}
+
 /**
  * Instruction variants for borsh serialization
  */
@@ -131,6 +138,16 @@ export interface DepositReceipt {
   bump: number;
 }
 
+export interface SessionBridge {
+  discriminator: number;
+  session: PublicKey;
+  mint: PublicKey;
+  bridgeProgram: PublicKey;
+  vault: PublicKey;
+  tokenProgram: PublicKey;
+  bump: number;
+}
+
 /**
  * Session discriminator
  */
@@ -151,8 +168,11 @@ export const DELEGATION_RECORD_DISCRIMINATOR = 3;
  */
 export const DEPOSIT_RECEIPT_DISCRIMINATOR = 4;
 
+export const SESSION_BRIDGE_DISCRIMINATOR = 8;
+
 export const SESSION_LEN = 219;
 export const DEPOSIT_RECEIPT_LEN = 82;
+export const SESSION_BRIDGE_LEN = 162;
 export const WITHDRAWAL_SINK = new PublicKey(
   "NS19999999999999999999999999999999999999999",
 );
@@ -190,6 +210,13 @@ export class PortalProgram {
     return PortalProgram.deriveFeeVaultPDA(this.defaultProgramId);
   }
 
+  async deriveCheckpointCursorPDA(session: PublicKey): Promise<PublicKey> {
+    return PortalProgram.deriveCheckpointCursorPDA(
+      session,
+      this.defaultProgramId,
+    );
+  }
+
   async deriveDelegationRecordPDA(delegatedAccount: PublicKey): Promise<PublicKey> {
     return PortalProgram.deriveDelegationRecordPDA(
       delegatedAccount,
@@ -210,6 +237,17 @@ export class PortalProgram {
 
   withdrawalSink(): PublicKey {
     return WITHDRAWAL_SINK;
+  }
+
+  async deriveSessionBridgePDA(
+    session: PublicKey,
+    mint: PublicKey,
+  ): Promise<PublicKey> {
+    return PortalProgram.deriveSessionBridgePDA(
+      session,
+      mint,
+      this.defaultProgramId,
+    );
   }
 
   encodeOpenSession(params: OpenSessionParams): Uint8Array {
@@ -236,6 +274,10 @@ export class PortalProgram {
     return PortalProgram.encodeUndelegate();
   }
 
+  encodeRegisterSessionBridge(params: RegisterSessionBridgeParams): Uint8Array {
+    return PortalProgram.encodeRegisterSessionBridge(params);
+  }
+
   parseSession(data: Uint8Array): Session {
     return PortalProgram.parseSession(data);
   }
@@ -250,6 +292,10 @@ export class PortalProgram {
 
   parseDepositReceipt(data: Uint8Array): DepositReceipt {
     return PortalProgram.parseDepositReceipt(data);
+  }
+
+  parseSessionBridge(data: Uint8Array): SessionBridge {
+    return PortalProgram.parseSessionBridge(data);
   }
 
   /**
@@ -275,6 +321,21 @@ export class PortalProgram {
   ): Promise<PublicKey> {
     const [pda] = PublicKey.findProgramAddressSync(
       [Buffer.from("fee_vault", "utf8")],
+      programId,
+    );
+    return pda;
+  }
+
+  /**
+   * Derive CheckpointCursor PDA address.
+   * Seeds: ["checkpoint_cursor", session]
+   */
+  static async deriveCheckpointCursorPDA(
+    session: PublicKey,
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("checkpoint_cursor", "utf8"), session.toBuffer()],
       programId,
     );
     return pda;
@@ -315,6 +376,22 @@ export class PortalProgram {
     return pda;
   }
 
+
+  /**
+   * Derive SessionBridge discovery PDA.
+   * Seeds: ["session_bridge", session, mint]
+   */
+  static async deriveSessionBridgePDA(
+    session: PublicKey,
+    mint: PublicKey,
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("session_bridge", "utf8"), session.toBuffer(), mint.toBuffer()],
+      programId,
+    );
+    return pda;
+  }
 
   /**
    * Encode OpenSession instruction data (borsh serialized)
@@ -360,6 +437,18 @@ export class PortalProgram {
    */
   static encodeUndelegate(): Uint8Array {
     return serialize(new UndelegateInstruction());
+  }
+
+  static encodeRegisterSessionBridge(
+    params: RegisterSessionBridgeParams,
+  ): Uint8Array {
+    const data = new Uint8Array(1 + 32 * 4);
+    data[0] = 22;
+    data.set(params.mint.toBytes(), 1);
+    data.set(params.bridgeProgram.toBytes(), 33);
+    data.set(params.vault.toBytes(), 65);
+    data.set(params.tokenProgram.toBytes(), 97);
+    return data;
   }
 
   /**
@@ -425,6 +514,19 @@ export class PortalProgram {
       balance: readU64LE(data, 65),
       withdrawn: readU64LE(data, 73),
       bump: data[81],
+    };
+  }
+
+  static parseSessionBridge(data: Uint8Array): SessionBridge {
+    assertAccountDataLength(data, SESSION_BRIDGE_LEN, "SessionBridge");
+    return {
+      discriminator: data[0],
+      session: new PublicKey(data.slice(1, 33)),
+      mint: new PublicKey(data.slice(33, 65)),
+      bridgeProgram: new PublicKey(data.slice(65, 97)),
+      vault: new PublicKey(data.slice(97, 129)),
+      tokenProgram: new PublicKey(data.slice(129, 161)),
+      bump: data[161],
     };
   }
 }

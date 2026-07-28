@@ -152,7 +152,6 @@ describe("Real Integration Tests", () => {
   let rpc: SolanaConnection;
   let portalUser: Keypair;
   let delegatedAccount: Keypair;
-  let closeSessionOwner: Keypair;
   let withdrawalL1Recipient: PublicKey;
   let validatorIdentity: PublicKey;
   const gridId = 1;
@@ -185,13 +184,11 @@ describe("Real Integration Tests", () => {
     portalUser = fundingSigner;
     // portalUser = Keypair.generate();
     delegatedAccount = Keypair.generate();
-    closeSessionOwner = Keypair.generate();
     withdrawalL1Recipient = Keypair.generate().publicKey;
 
     console.log("\n=== Test Setup ===");
     console.log("Portal owner:", portalUser.publicKey.toBase58());
     console.log("Delegated account:", delegatedAccount.publicKey.toBase58());
-    console.log("Close-session owner:", closeSessionOwner.publicKey.toBase58());
     console.log("Withdrawal L1 recipient:", withdrawalL1Recipient.toBase58());
 
     
@@ -214,14 +211,6 @@ describe("Real Integration Tests", () => {
       );
       console.log("✓ Transferred 1 SOL to delegated account");
 
-      await transferLamportsFromFunding(
-        sdk,
-        rpc,
-        fundingSigner,
-        closeSessionOwner.publicKey,
-        200_000_000n,
-      );
-      console.log("✓ Transferred 2 SOL to close-session owner");
 
       await transferLamportsFromFunding(
         sdk,
@@ -506,15 +495,15 @@ describe("Real Integration Tests", () => {
     console.log("✓ Undelegate completed");
   }, 60000);
 
-  test("Step 6: Close Session - any signer can close active global session", async () => {
+  test("Step 6: Close Session - authority closes active global session", async () => {
     console.log("\n=== Step 6: Close Global Session ===");
 
     const sessionPDA = await sdk.portal.deriveSessionPDA();
     const feeVaultPDA = await sdk.portal.deriveFeeVaultPDA();
 
     await sdk.closeSession(
-      closeSessionOwner.publicKey,
-      walletSignLocal(closeSessionOwner),
+      portalUser.publicKey,
+      walletSignLocal(portalUser),
       {},
       {
         commitment: "confirmed",
