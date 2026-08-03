@@ -88,7 +88,7 @@ class StartWithdrawalInstruction {
  * Session state account
  */
 export interface Session {
-  discriminator: number;
+  discriminator: Uint8Array;
   gridId: bigint;
   ttlSlots: bigint;
   feeCap: bigint;
@@ -111,7 +111,7 @@ export interface Session {
  * FeeVault state account
  */
 export interface FeeVault {
-  discriminator: number;
+  discriminator: Uint8Array;
   authority: Uint8Array;
   bump: number;
 }
@@ -120,7 +120,7 @@ export interface FeeVault {
  * DelegationRecord state account
  */
 export interface DelegationRecord {
-  discriminator: number;
+  discriminator: Uint8Array;
   ownerProgram: Uint8Array;
   gridId: bigint;
   bump: number;
@@ -130,7 +130,7 @@ export interface DelegationRecord {
  * DepositReceipt state account
  */
 export interface DepositReceipt {
-  discriminator: number;
+  discriminator: Uint8Array;
   session: Uint8Array;
   recipient: Uint8Array;
   balance: bigint;
@@ -139,7 +139,7 @@ export interface DepositReceipt {
 }
 
 export interface SessionBridge {
-  discriminator: number;
+  discriminator: Uint8Array;
   session: PublicKey;
   mint: PublicKey;
   bridgeProgram: PublicKey;
@@ -148,31 +148,25 @@ export interface SessionBridge {
   bump: number;
 }
 
-/**
- * Session discriminator
- */
-export const SESSION_DISCRIMINATOR = 1;
+export const SESSION_DISCRIMINATOR = Uint8Array.from([
+  243, 81, 72, 115, 214, 188, 72, 144,
+]);
+export const FEE_VAULT_DISCRIMINATOR = Uint8Array.from([
+  192, 178, 69, 232, 58, 149, 157, 132,
+]);
+export const DELEGATION_RECORD_DISCRIMINATOR = Uint8Array.from([
+  203, 185, 161, 226, 129, 251, 132, 155,
+]);
+export const DEPOSIT_RECEIPT_DISCRIMINATOR = Uint8Array.from([
+  64, 175, 24, 183, 138, 109, 70, 78,
+]);
+export const SESSION_BRIDGE_DISCRIMINATOR = Uint8Array.from([
+  145, 47, 8, 254, 118, 119, 114, 215,
+]);
 
-/**
- * FeeVault discriminator
- */
-export const FEE_VAULT_DISCRIMINATOR = 2;
-
-/**
- * DelegationRecord discriminator
- */
-export const DELEGATION_RECORD_DISCRIMINATOR = 3;
-
-/**
- * DepositReceipt discriminator
- */
-export const DEPOSIT_RECEIPT_DISCRIMINATOR = 4;
-
-export const SESSION_BRIDGE_DISCRIMINATOR = 8;
-
-export const SESSION_LEN = 219;
-export const DEPOSIT_RECEIPT_LEN = 82;
-export const SESSION_BRIDGE_LEN = 162;
+export const SESSION_LEN = 226;
+export const DEPOSIT_RECEIPT_LEN = 89;
+export const SESSION_BRIDGE_LEN = 169;
 export const WITHDRAWAL_SINK = new PublicKey(
   "NS19999999999999999999999999999999999999999",
 );
@@ -186,6 +180,20 @@ function assertAccountDataLength(
     throw new Error(
       `Invalid ${accountName} data length: got ${data.length}, expected >= ${expected}`,
     );
+  }
+}
+
+function assertAccountDiscriminator(
+  data: Uint8Array,
+  expected: Uint8Array,
+  accountName: string,
+) {
+  if (
+    !data
+      .slice(0, expected.length)
+      .every((byte, index) => byte === expected[index])
+  ) {
+    throw new Error(`Invalid ${accountName} discriminator`);
   }
 }
 
@@ -456,24 +464,25 @@ export class PortalProgram {
    */
   static parseSession(data: Uint8Array): Session {
     assertAccountDataLength(data, SESSION_LEN, "Session");
+    assertAccountDiscriminator(data, SESSION_DISCRIMINATOR, "Session");
     return {
-      discriminator: data[0],
-      gridId: readU64LE(data, 1),
-      ttlSlots: readU64LE(data, 9),
-      feeCap: readU64LE(data, 17),
-      createdAt: readU64LE(data, 25),
-      nonce: readU128LE(data, 33),
-      authority: new PublicKey(data.slice(49, 81)),
-      validator: new PublicKey(data.slice(81, 113)),
-      settlementIntervalSlots: readU64LE(data, 113),
-      lastSettledL1Slot: readU64LE(data, 121),
-      lastSettledErSlot: readU64LE(data, 129),
-      settlementStatus: data[137],
-      settlementErSlot: readU64LE(data, 138),
-      settlementChecksum: data.slice(146, 178),
-      settlementAccumulator: data.slice(178, 210),
-      settlementStartedL1Slot: readU64LE(data, 210),
-      bump: data[218],
+      discriminator: data.slice(0, 8),
+      gridId: readU64LE(data, 8),
+      ttlSlots: readU64LE(data, 16),
+      feeCap: readU64LE(data, 24),
+      createdAt: readU64LE(data, 32),
+      nonce: readU128LE(data, 40),
+      authority: new PublicKey(data.slice(56, 88)),
+      validator: new PublicKey(data.slice(88, 120)),
+      settlementIntervalSlots: readU64LE(data, 120),
+      lastSettledL1Slot: readU64LE(data, 128),
+      lastSettledErSlot: readU64LE(data, 136),
+      settlementStatus: data[144],
+      settlementErSlot: readU64LE(data, 145),
+      settlementChecksum: data.slice(153, 185),
+      settlementAccumulator: data.slice(185, 217),
+      settlementStartedL1Slot: readU64LE(data, 217),
+      bump: data[225],
     };
   }
 
@@ -481,11 +490,12 @@ export class PortalProgram {
    * Parse FeeVault account data
    */
   static parseFeeVault(data: Uint8Array): FeeVault {
-    assertAccountDataLength(data, 34, "FeeVault");
+    assertAccountDataLength(data, 41, "FeeVault");
+    assertAccountDiscriminator(data, FEE_VAULT_DISCRIMINATOR, "FeeVault");
     return {
-      discriminator: data[0],
-      authority: data.slice(1, 33),
-      bump: data[33],
+      discriminator: data.slice(0, 8),
+      authority: data.slice(8, 40),
+      bump: data[40],
     };
   }
 
@@ -493,12 +503,17 @@ export class PortalProgram {
    * Parse DelegationRecord account data
    */
   static parseDelegationRecord(data: Uint8Array): DelegationRecord {
-    assertAccountDataLength(data, 42, "DelegationRecord");
+    assertAccountDataLength(data, 49, "DelegationRecord");
+    assertAccountDiscriminator(
+      data,
+      DELEGATION_RECORD_DISCRIMINATOR,
+      "DelegationRecord",
+    );
     return {
-      discriminator: data[0],
-      ownerProgram: data.slice(1, 33),
-      gridId: readU64LE(data, 33),
-      bump: data[41],
+      discriminator: data.slice(0, 8),
+      ownerProgram: data.slice(8, 40),
+      gridId: readU64LE(data, 40),
+      bump: data[48],
     };
   }
 
@@ -507,26 +522,36 @@ export class PortalProgram {
    */
   static parseDepositReceipt(data: Uint8Array): DepositReceipt {
     assertAccountDataLength(data, DEPOSIT_RECEIPT_LEN, "DepositReceipt");
+    assertAccountDiscriminator(
+      data,
+      DEPOSIT_RECEIPT_DISCRIMINATOR,
+      "DepositReceipt",
+    );
     return {
-      discriminator: data[0],
-      session: data.slice(1, 33),
-      recipient: data.slice(33, 65),
-      balance: readU64LE(data, 65),
-      withdrawn: readU64LE(data, 73),
-      bump: data[81],
+      discriminator: data.slice(0, 8),
+      session: data.slice(8, 40),
+      recipient: data.slice(40, 72),
+      balance: readU64LE(data, 72),
+      withdrawn: readU64LE(data, 80),
+      bump: data[88],
     };
   }
 
   static parseSessionBridge(data: Uint8Array): SessionBridge {
     assertAccountDataLength(data, SESSION_BRIDGE_LEN, "SessionBridge");
+    assertAccountDiscriminator(
+      data,
+      SESSION_BRIDGE_DISCRIMINATOR,
+      "SessionBridge",
+    );
     return {
-      discriminator: data[0],
-      session: new PublicKey(data.slice(1, 33)),
-      mint: new PublicKey(data.slice(33, 65)),
-      bridgeProgram: new PublicKey(data.slice(65, 97)),
-      vault: new PublicKey(data.slice(97, 129)),
-      tokenProgram: new PublicKey(data.slice(129, 161)),
-      bump: data[161],
+      discriminator: data.slice(0, 8),
+      session: new PublicKey(data.slice(8, 40)),
+      mint: new PublicKey(data.slice(40, 72)),
+      bridgeProgram: new PublicKey(data.slice(72, 104)),
+      vault: new PublicKey(data.slice(104, 136)),
+      tokenProgram: new PublicKey(data.slice(136, 168)),
+      bump: data[168],
     };
   }
 }

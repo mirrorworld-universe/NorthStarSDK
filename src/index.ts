@@ -1134,7 +1134,11 @@ export class NorthStarSDK {
 }
 
 export * from "./types";
-export { PortalProgram } from "./programs/portal";
+export {
+  PortalProgram,
+  SESSION_DISCRIMINATOR,
+  SESSION_LEN,
+} from "./programs/portal";
 export {
   Connection,
   Keypair,

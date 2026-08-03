@@ -1,5 +1,10 @@
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
-import { NorthStarSDK, PortalProgram } from "../src";
+import {
+  NorthStarSDK,
+  PortalProgram,
+  SESSION_DISCRIMINATOR,
+  SESSION_LEN,
+} from "../src";
 
 function readU64LE(data: Uint8Array, offset: number): bigint {
   return new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(
@@ -124,27 +129,27 @@ describe("Portal SDK encoding and account layout", () => {
     expect(data[0]).toBe(22);
   });
 
-  test("parses current 219-byte Session layout", () => {
+  test("parses Anchor-compatible Session layout", () => {
     const authority = Keypair.generate().publicKey;
     const validator = Keypair.generate().publicKey;
-    const data = new Uint8Array(219);
-    data[0] = 1;
-    writeU64LE(data, 1, 11n);
-    writeU64LE(data, 9, 22n);
-    writeU64LE(data, 17, 33n);
-    writeU64LE(data, 25, 44n);
-    writeU128LE(data, 33, 55n);
-    data.set(authority.toBytes(), 49);
-    data.set(validator.toBytes(), 81);
-    writeU64LE(data, 113, 66n);
-    writeU64LE(data, 121, 77n);
-    writeU64LE(data, 129, 88n);
-    data[137] = 1;
-    writeU64LE(data, 138, 99n);
-    data.fill(0xaa, 146, 178);
-    data.fill(0xbb, 178, 210);
-    writeU64LE(data, 210, 111n);
-    data[218] = 9;
+    const data = new Uint8Array(SESSION_LEN);
+    data.set(SESSION_DISCRIMINATOR);
+    writeU64LE(data, 8, 11n);
+    writeU64LE(data, 16, 22n);
+    writeU64LE(data, 24, 33n);
+    writeU64LE(data, 32, 44n);
+    writeU128LE(data, 40, 55n);
+    data.set(authority.toBytes(), 56);
+    data.set(validator.toBytes(), 88);
+    writeU64LE(data, 120, 66n);
+    writeU64LE(data, 128, 77n);
+    writeU64LE(data, 136, 88n);
+    data[144] = 1;
+    writeU64LE(data, 145, 99n);
+    data.fill(0xaa, 153, 185);
+    data.fill(0xbb, 185, 217);
+    writeU64LE(data, 217, 111n);
+    data[225] = 9;
 
     const session = PortalProgram.parseSession(data);
     expect(session.gridId).toBe(11n);
@@ -155,5 +160,12 @@ describe("Portal SDK encoding and account layout", () => {
     expect(session.settlementChecksum[0]).toBe(0xaa);
     expect(session.settlementAccumulator[0]).toBe(0xbb);
     expect(session.bump).toBe(9);
+  });
+
+  test("rejects a Session with the wrong discriminator", () => {
+    const data = new Uint8Array(SESSION_LEN);
+    expect(() => PortalProgram.parseSession(data)).toThrow(
+      "Invalid Session discriminator",
+    );
   });
 });
