@@ -19,7 +19,6 @@ import {
 import bs58 from "bs58";
 import { config } from "dotenv";
 import {
-  encodeSystemProgramAssignData,
   NorthStarSDK,
   signVersionedTransaction,
   TOKEN_BRIDGE_PROGRAM_ID,
@@ -78,28 +77,6 @@ async function sendTx(
     intervalMs: 500,
   });
   return signature;
-}
-
-async function assignAccountOwnerAndConfirm(
-  sdk: NorthStarSDK,
-  connection: Connection,
-  feePayer: Keypair,
-  account: Keypair,
-  newOwnerProgramId: PublicKey,
-) {
-  await sendTx(
-    sdk,
-    connection,
-    feePayer.publicKey,
-    [
-      {
-        programId: SystemProgram.programId,
-        keys: [{ pubkey: account.publicKey, isSigner: true, isWritable: true }],
-        data: Buffer.from(encodeSystemProgramAssignData(newOwnerProgramId)),
-      },
-    ],
-    [feePayer, account],
-  );
 }
 
 async function sendErTx(
@@ -358,26 +335,26 @@ describe("SPL token bridge live E2E", () => {
       [alice],
     );
 
-    await assignAccountOwnerAndConfirm(
+    // Ownership transfer and Portal delegation must land atomically.
+    // Otherwise the record-creation slot does not expose the delegated account to the ER.
+    const feePayerDelegation = await sdk.buildDelegate(alice, GRID_ID, [
+      {
+        delegatedAccountSigner: erFeePayer,
+        ownerProgramId: SystemProgram.programId,
+      },
+    ]);
+    await sendTx(
       sdk,
       rpc,
-      alice,
-      erFeePayer,
-      PORTAL_PROGRAM_ID,
-    );
-    await sdk.delegate(
       alice.publicKey,
-      GRID_ID,
-      walletSignLocal(alice),
-      {
-        delegations: [
-          {
-            delegatedAccountSigner: erFeePayer,
-            ownerProgramId: SystemProgram.programId,
-          },
-        ],
-      },
-      { commitment: "confirmed", skipPreflight: true, maxAttempts: 60 },
+      [
+        SystemProgram.assign({
+          accountPubkey: erFeePayer.publicKey,
+          programId: PORTAL_PROGRAM_ID,
+        }),
+        ...feePayerDelegation.instructions,
+      ],
+      [alice, erFeePayer, ...feePayerDelegation.buffers],
     );
 
     await sendTx(
