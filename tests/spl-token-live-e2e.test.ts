@@ -391,6 +391,7 @@ describe("SPL token bridge live E2E", () => {
       alice.publicKey,
       [
         sdk.buildTokenBridgeDepositInstruction({
+          payer: alice.publicKey,
           owner: alice.publicKey,
           vault,
           erTokenAccount: aliceEr,

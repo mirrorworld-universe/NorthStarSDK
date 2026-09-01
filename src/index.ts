@@ -275,6 +275,7 @@ export class NorthStarSDK {
   }
 
   buildTokenBridgeDepositInstruction(params: {
+    payer: PublicKey;
     owner: PublicKey;
     vault: PublicKey;
     erTokenAccount: PublicKey;
@@ -297,7 +298,8 @@ export class NorthStarSDK {
     return new TransactionInstruction({
       programId: this.tokenBridge.programId,
       keys: [
-        { pubkey: params.owner, isSigner: true, isWritable: true },
+        { pubkey: params.payer, isSigner: true, isWritable: true },
+        { pubkey: params.owner, isSigner: true, isWritable: false },
         { pubkey: params.vault, isSigner: false, isWritable: true },
         { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
         { pubkey: params.sessionBridge, isSigner: false, isWritable: false },

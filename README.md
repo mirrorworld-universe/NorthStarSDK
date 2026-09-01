@@ -309,6 +309,25 @@ const registerBridge = await sdk.buildRegisterSessionBridgeInstruction({
 });
 ```
 
+SPL deposits use the same split: `payer` funds the deposit receipt while `owner` authorizes
+the token transfer.
+
+```typescript
+const deposit = sdk.buildTokenBridgeDepositInstruction({
+  payer: user.publicKey,
+  owner: tokenOwner.publicKey,
+  vault,
+  erTokenAccount,
+  sessionBridge,
+  sourceTokenAccount,
+  vaultTokenAccount,
+  mint,
+  tokenProgram,
+  amount,
+  decimals,
+});
+```
+
 ER token delegation separates rent funding from ownership authorization. Both `payer` and
 `owner` must sign; `payer` must be able to fund System Program account creation.
 
