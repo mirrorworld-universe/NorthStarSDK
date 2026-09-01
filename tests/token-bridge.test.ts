@@ -22,6 +22,7 @@ describe("SPL token bridge", () => {
         ephemeralRollup: "http://localhost:8910",
       },
     });
+    const payer = Keypair.generate().publicKey;
     const owner = Keypair.generate().publicKey;
     const sessionBridge = Keypair.generate().publicKey;
     const erTokenAccount = Keypair.generate().publicKey;
@@ -33,6 +34,7 @@ describe("SPL token bridge", () => {
     const tokenProgram = Keypair.generate().publicKey;
 
     const deposit = sdk.buildTokenBridgeDepositInstruction({
+      payer,
       owner,
       vault,
       erTokenAccount,
@@ -44,12 +46,24 @@ describe("SPL token bridge", () => {
       amount: 600n,
       decimals: 6,
     });
-    expect(deposit.keys).toHaveLength(12);
-    expect(deposit.keys[1].isWritable).toBe(true);
-    expect(deposit.keys[9].pubkey.equals(
-      sdk.tokenBridge.deriveDepositReceiptPDA(sessionBridge, erTokenAccount),
-    )).toBe(true);
-    expect(deposit.keys[11].pubkey.equals(SystemProgram.programId)).toBe(true);
+    expect(deposit.keys).toHaveLength(13);
+    expect(deposit.keys[0]).toMatchObject({
+      pubkey: payer,
+      isSigner: true,
+      isWritable: true,
+    });
+    expect(deposit.keys[1]).toMatchObject({
+      pubkey: owner,
+      isSigner: true,
+      isWritable: false,
+    });
+    expect(deposit.keys[2].isWritable).toBe(true);
+    expect(
+      deposit.keys[10].pubkey.equals(
+        sdk.tokenBridge.deriveDepositReceiptPDA(sessionBridge, erTokenAccount),
+      ),
+    ).toBe(true);
+    expect(deposit.keys[12].pubkey.equals(SystemProgram.programId)).toBe(true);
 
     const withdrawal = sdk.buildTokenBridgeStartWithdrawalInstruction({
       owner,
@@ -63,6 +77,44 @@ describe("SPL token bridge", () => {
     expect(withdrawal.keys).toHaveLength(6);
     expect(withdrawal.data[0]).toBe(7);
     expect(withdrawal.keys[4].pubkey.equals(destinationTokenAccount)).toBe(true);
+  });
+
+  test("separates ER token delegation payer from owner", () => {
+    const portalProgramId = Keypair.generate().publicKey;
+    const sdk = new NorthStarSDK({
+      portalProgramId,
+      customEndpoints: {
+        solana: "http://localhost:8899",
+        ephemeralRollup: "http://localhost:8910",
+      },
+    });
+    const payer = Keypair.generate().publicKey;
+    const owner = Keypair.generate().publicKey;
+    const erTokenAccount = Keypair.generate().publicKey;
+    const sessionBridge = Keypair.generate().publicKey;
+    const session = Keypair.generate().publicKey;
+
+    const instruction = sdk.buildDelegateErTokenAccountInstruction({
+      payer,
+      owner,
+      erTokenAccount,
+      sessionBridge,
+      session,
+      gridId: 1n,
+    });
+
+    expect(instruction.keys).toHaveLength(10);
+    expect(instruction.keys[0]).toMatchObject({
+      pubkey: payer,
+      isSigner: true,
+      isWritable: true,
+    });
+    expect(instruction.keys[1]).toMatchObject({
+      pubkey: owner,
+      isSigner: true,
+      isWritable: false,
+    });
+    expect(instruction.keys[2].pubkey.equals(erTokenAccount)).toBe(true);
   });
 
   test("parses cumulative vault deposit and withdrawal totals", () => {

@@ -106,6 +106,7 @@ The main entry also exports `signVersionedTransaction`, `getVersionedTxSignature
 | `getEphemeralRpc()` | Ephemeral Rollup `Connection` |
 | `getPortalProgramId()` | Portal program `PublicKey` |
 | `portal` | `PortalProgram` instance (PDA derivation, instruction encoding, account parsing) |
+| `tokenBridge` | `TokenBridgeProgram` instance (SPL bridge PDA derivation, encoding, and parsing) |
 | `accountResolver` | `AccountResolver` — resolves accounts by data source |
 
 ### Key utilities
@@ -292,6 +293,59 @@ Use when composing custom transactions or showing them in an external wallet:
 
 Here `instructions` is `TransactionInstruction[]`, and `feePayer` is `signer.publicKey`.
 
+### SPL token bridge builders
+
+`buildRegisterSessionBridgeInstruction` is permissionless. `payer` funds the
+Portal discovery account; Portal validates the initialized mint, executable bridge and token
+programs, and canonical bridge vault.
+
+```typescript
+const registerBridge = await sdk.buildRegisterSessionBridgeInstruction({
+  payer: user.publicKey,
+  session,
+  mint,
+  bridgeProgram,
+  tokenProgram,
+});
+```
+
+SPL deposits use the same split: `payer` funds the deposit receipt while `owner` authorizes
+the token transfer.
+
+```typescript
+const deposit = sdk.buildTokenBridgeDepositInstruction({
+  payer: user.publicKey,
+  owner: tokenOwner.publicKey,
+  vault,
+  erTokenAccount,
+  sessionBridge,
+  sourceTokenAccount,
+  vaultTokenAccount,
+  mint,
+  tokenProgram,
+  amount,
+  decimals,
+});
+```
+
+ER token delegation separates rent funding from ownership authorization. Both `payer` and
+`owner` must sign; `payer` must be able to fund System Program account creation.
+
+```typescript
+const delegateBalance = sdk.buildDelegateErTokenAccountInstruction({
+  payer: user.publicKey,
+  owner: tokenOwner.publicKey,
+  erTokenAccount,
+  sessionBridge,
+  session,
+  gridId,
+});
+```
+
+For a PDA owner, its program must invoke the token bridge through CPI with `invoke_signed`;
+a normal funded account remains the separate `payer`. Direct Portal undelegation also
+requires the delegated account signature.
+
 ---
 
 ## `PortalProgram`
@@ -304,8 +358,10 @@ Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the config
 |------|----------------|
 | `deriveSessionPDA()` | `session` |
 | `deriveFeeVaultPDA()` | `fee_vault` |
+| `deriveCheckpointCursorPDA(session)` | `checkpoint_cursor` + session |
 | `deriveDelegationRecordPDA(delegatedAccount)` | `delegation` + delegatedAccount |
 | `deriveDepositReceiptPDA(session, recipient)` | `deposit_receipt` + session + recipient |
+| `deriveSessionBridgePDA(session, mint)` | `session_bridge` + session + mint |
 | `withdrawalSink()` | fixed `NS19999999999999999999999999999999999999999` |
 
 ### Instruction encoding (Borsh)
@@ -318,6 +374,7 @@ Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the config
 | `encodeDelegate({ gridId })` | variant 3 |
 | `encodeUndelegate()` | variant 4 |
 | `encodeStartWithdrawal({ lamports })` | variant 13 |
+| `encodeRegisterSessionBridge({ mint, bridgeProgram, vault, tokenProgram })` | variant 22 |
 
 ### Account data parsing
 
@@ -329,6 +386,7 @@ After `getAccountInfo` returns `data: Uint8Array`:
 | `parseFeeVault(data)` | FeeVault |
 | `parseDelegationRecord(data)` | DelegationRecord |
 | `parseDepositReceipt(data)` | DepositReceipt (`balance`, `withdrawn`) |
+| `parseSessionBridge(data)` | Session bridge discovery state |
 
 You can combine with constants like `SESSION_DISCRIMINATOR` for type discrimination.
 

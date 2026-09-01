@@ -2,6 +2,7 @@ import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   NorthStarSDK,
   PortalProgram,
+  TokenBridgeProgram,
   SESSION_DISCRIMINATOR,
   SESSION_LEN,
 } from "../src";
@@ -91,6 +92,7 @@ describe("Portal SDK encoding and account layout", () => {
     expect(undelegate.instructions[0].keys[5].pubkey.equals(sessionPDA)).toBe(
       true,
     );
+    expect(undelegate.instructions[0].keys[1].isSigner).toBe(true);
     expect(undelegate.instructions[0].keys[5].isWritable).toBe(false);
   });
 
@@ -127,6 +129,41 @@ describe("Portal SDK encoding and account layout", () => {
 
     expect(data).toHaveLength(129);
     expect(data[0]).toBe(22);
+  });
+
+  test("builds permissionless RegisterSessionBridge with validation accounts", async () => {
+    const sdk = sdkWithMockRpc();
+    const payer = Keypair.generate().publicKey;
+    const session = await sdk.portal.deriveSessionPDA();
+    const mint = Keypair.generate().publicKey;
+    const bridgeProgram = Keypair.generate().publicKey;
+    const tokenProgram = Keypair.generate().publicKey;
+    const sessionBridge = await sdk.portal.deriveSessionBridgePDA(session, mint);
+    const vault = TokenBridgeProgram.deriveVaultPDA(sessionBridge, bridgeProgram);
+
+    const instruction = await sdk.buildRegisterSessionBridgeInstruction({
+      payer,
+      session,
+      mint,
+      bridgeProgram,
+      tokenProgram,
+    });
+
+    expect(instruction.keys).toHaveLength(7);
+    expect(instruction.keys[0]).toMatchObject({
+      pubkey: payer,
+      isSigner: true,
+      isWritable: true,
+    });
+    expect(instruction.keys[1].pubkey.equals(session)).toBe(true);
+    expect(instruction.keys[2].pubkey.equals(sessionBridge)).toBe(true);
+    expect(instruction.keys[3].pubkey.equals(mint)).toBe(true);
+    expect(instruction.keys[4].pubkey.equals(bridgeProgram)).toBe(true);
+    expect(instruction.keys[5].pubkey.equals(tokenProgram)).toBe(true);
+    expect(instruction.keys[6].pubkey.equals(SystemProgram.programId)).toBe(true);
+    expect(
+      new PublicKey(instruction.data.slice(65, 97)).equals(vault),
+    ).toBe(true);
   });
 
   test("parses Anchor-compatible Session layout", () => {
