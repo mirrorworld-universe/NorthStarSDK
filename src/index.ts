@@ -187,7 +187,7 @@ export class NorthStarSDK {
   }
 
   async buildRegisterSessionBridgeInstruction(params: {
-    authority: PublicKey;
+    payer: PublicKey;
     session: PublicKey;
     mint: PublicKey;
     vault?: PublicKey;
@@ -199,13 +199,18 @@ export class NorthStarSDK {
       params.session,
       params.mint,
     );
-    const vault = params.vault ?? this.tokenBridge.deriveVaultPDA(sessionBridge);
+    const vault =
+      params.vault ??
+      TokenBridgeProgram.deriveVaultPDA(sessionBridge, bridgeProgram);
     return new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
-        { pubkey: params.authority, isSigner: true, isWritable: true },
+        { pubkey: params.payer, isSigner: true, isWritable: true },
         { pubkey: params.session, isSigner: false, isWritable: false },
         { pubkey: sessionBridge, isSigner: false, isWritable: true },
+        { pubkey: params.mint, isSigner: false, isWritable: false },
+        { pubkey: bridgeProgram, isSigner: false, isWritable: false },
+        { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
         { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
       ],
       data: Buffer.from(
@@ -394,6 +399,7 @@ export class NorthStarSDK {
 
   buildDelegateErTokenAccountInstruction(params: {
     payer: PublicKey;
+    owner: PublicKey;
     erTokenAccount: PublicKey;
     sessionBridge: PublicKey;
     session: PublicKey;
@@ -408,6 +414,7 @@ export class NorthStarSDK {
       programId: this.tokenBridge.programId,
       keys: [
         { pubkey: params.payer, isSigner: true, isWritable: true },
+        { pubkey: params.owner, isSigner: true, isWritable: false },
         { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
         { pubkey: this.tokenBridge.programId, isSigner: false, isWritable: false },
         { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
@@ -811,7 +818,7 @@ export class NorthStarSDK {
       programId: this.portalProgramId,
       keys: [
         { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: delegatedAccount, isSigner: false, isWritable: true },
+        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
         { pubkey: ownerProgramId, isSigner: false, isWritable: false },
         { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },

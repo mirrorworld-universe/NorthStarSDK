@@ -310,7 +310,7 @@ describe("SPL token bridge live E2E", () => {
       alice.publicKey,
       [
         await sdk.buildRegisterSessionBridgeInstruction({
-          authority: alice.publicKey,
+          payer: alice.publicKey,
           session,
           mint: mint.publicKey,
           vault,
@@ -364,6 +364,7 @@ describe("SPL token bridge live E2E", () => {
       [
         sdk.buildDelegateErTokenAccountInstruction({
           payer: alice.publicKey,
+          owner: alice.publicKey,
           erTokenAccount: aliceEr,
           sessionBridge,
           session,
@@ -371,13 +372,14 @@ describe("SPL token bridge live E2E", () => {
         }),
         sdk.buildDelegateErTokenAccountInstruction({
           payer: alice.publicKey,
+          owner: bob.publicKey,
           erTokenAccount: bobEr,
           sessionBridge,
           session,
           gridId: GRID_ID,
         }),
       ],
-      [alice],
+      [alice, bob],
     );
 
     await waitForErAmount(sdk, erRpc, aliceEr, 0n);
