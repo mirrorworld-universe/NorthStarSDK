@@ -1,4 +1,4 @@
-import { Keypair, SystemProgram } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   NorthStarSDK,
   TokenBridgeProgram,
@@ -115,6 +115,53 @@ describe("SPL token bridge", () => {
       isWritable: false,
     });
     expect(instruction.keys[2].pubkey.equals(erTokenAccount)).toBe(true);
+  });
+
+  test("builds token-account request and final undelegation instructions", () => {
+    const portalProgramId = Keypair.generate().publicKey;
+    const sdk = new NorthStarSDK({
+      portalProgramId,
+      customEndpoints: {
+        solana: "http://localhost:8899",
+        ephemeralRollup: "http://localhost:8910",
+      },
+    });
+    const payer = Keypair.generate().publicKey;
+    const authority = Keypair.generate().publicKey;
+    const erTokenAccount = Keypair.generate().publicKey;
+    const session = Keypair.generate().publicKey;
+    const requestPDA = PublicKey.findProgramAddressSync(
+      [Buffer.from("undelegation_request"), erTokenAccount.toBuffer()],
+      portalProgramId,
+    )[0];
+
+    const request = sdk.buildRequestErTokenAccountUndelegationInstruction({
+      payer,
+      authority,
+      erTokenAccount,
+      session,
+    });
+    expect(request.data[0]).toBe(9);
+    expect(request.keys).toHaveLength(9);
+    expect(request.keys[0]).toMatchObject({
+      pubkey: payer,
+      isSigner: true,
+      isWritable: true,
+    });
+    expect(request.keys[1]).toMatchObject({
+      pubkey: authority,
+      isSigner: true,
+      isWritable: false,
+    });
+    expect(request.keys[7].pubkey.equals(requestPDA)).toBe(true);
+
+    const undelegate = sdk.buildUndelegateErTokenAccountInstruction({
+      authority,
+      erTokenAccount,
+      session,
+    });
+    expect(undelegate.keys).toHaveLength(9);
+    expect(undelegate.keys[8].pubkey.equals(requestPDA)).toBe(true);
   });
 
   test("parses cumulative vault deposit and withdrawal totals", () => {

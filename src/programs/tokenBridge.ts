@@ -112,6 +112,10 @@ export class TokenBridgeProgram {
     return TokenBridgeProgram.encodeUndelegateErTokenAccount();
   }
 
+  encodeRequestUndelegation(): Uint8Array {
+    return TokenBridgeProgram.encodeRequestUndelegation();
+  }
+
   parseTokenVault(data: Uint8Array): TokenVault {
     return TokenBridgeProgram.parseTokenVault(data);
   }
@@ -224,6 +228,10 @@ export class TokenBridgeProgram {
 
   static encodeUndelegateErTokenAccount(): Uint8Array {
     return u8(6);
+  }
+
+  static encodeRequestUndelegation(): Uint8Array {
+    return u8(9);
   }
 
   static parseTokenVault(data: Uint8Array): TokenVault {
