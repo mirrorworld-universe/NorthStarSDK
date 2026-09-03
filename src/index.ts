@@ -12,7 +12,11 @@ import bs58 from "bs58";
 import { AccountInfo, Address, NorthStarConfig, NorthStarSyncStatus } from "./types";
 import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
 import { AccountResolver } from "./readers/AccountResolver";
-import { PortalProgram, WITHDRAWAL_SINK } from "./programs/portal";
+import {
+  PortalProgram,
+  type UndelegationRequest,
+  WITHDRAWAL_SINK,
+} from "./programs/portal";
 import {
   TOKEN_BRIDGE_PROGRAM_ID,
   TokenBridgeProgram,
@@ -76,7 +80,7 @@ export interface DepositFeeV1Signers {
   feePayerSigner?: Keypair;
 }
 
-/** undelegate: one delegated account + optional fee payer. */
+/** requestUndelegation / undelegate: one delegated account + optional fee payer. */
 export interface UndelegateV1Signers {
   delegatedAccountSigner: Keypair;
   feePayerSigner?: Keypair;
@@ -430,6 +434,40 @@ export class NorthStarSDK {
     });
   }
 
+  buildRequestErTokenAccountUndelegationInstruction(params: {
+    payer: PublicKey;
+    authority: PublicKey;
+    erTokenAccount: PublicKey;
+    session: PublicKey;
+  }): TransactionInstruction {
+    const [delegationRecord] = PublicKey.findProgramAddressSync(
+      [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
+      this.portalProgramId,
+    );
+    const [undelegationRequest] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("undelegation_request", "utf8"),
+        params.erTokenAccount.toBuffer(),
+      ],
+      this.portalProgramId,
+    );
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.payer, isSigner: true, isWritable: true },
+        { pubkey: params.authority, isSigner: true, isWritable: false },
+        { pubkey: params.erTokenAccount, isSigner: false, isWritable: false },
+        { pubkey: this.tokenBridge.programId, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        { pubkey: params.session, isSigner: false, isWritable: false },
+        { pubkey: delegationRecord, isSigner: false, isWritable: false },
+        { pubkey: undelegationRequest, isSigner: false, isWritable: true },
+        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(this.tokenBridge.encodeRequestUndelegation()),
+    });
+  }
+
   buildUndelegateErTokenAccountInstruction(params: {
     authority: PublicKey;
     erTokenAccount: PublicKey;
@@ -437,6 +475,13 @@ export class NorthStarSDK {
   }): TransactionInstruction {
     const [delegationRecord] = PublicKey.findProgramAddressSync(
       [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
+      this.portalProgramId,
+    );
+    const [undelegationRequest] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("undelegation_request", "utf8"),
+        params.erTokenAccount.toBuffer(),
+      ],
       this.portalProgramId,
     );
     const buffer = this.tokenBridge.deriveBufferPDA(params.erTokenAccount);
@@ -451,6 +496,7 @@ export class NorthStarSDK {
         { pubkey: delegationRecord, isSigner: false, isWritable: true },
         { pubkey: buffer, isSigner: false, isWritable: true },
         { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: undelegationRequest, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(this.tokenBridge.encodeUndelegateErTokenAccount()),
     });
@@ -459,6 +505,17 @@ export class NorthStarSDK {
   /** Get the ER node's L1 sync cursor. */
   async getEphemeralRollupSyncStatus(): Promise<NorthStarSyncStatus> {
     return await this.ephemeralRollupReader.getSyncStatus();
+  }
+
+  async getUndelegationRequest(
+    delegatedAccount: PublicKey,
+  ): Promise<UndelegationRequest | null> {
+    const requestPDA =
+      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
+    const account = await this.rpc.getAccountInfo(requestPDA);
+    return account == null
+      ? null
+      : this.portal.parseUndelegationRequest(account.data);
   }
 
   private sleep(ms: number): Promise<void> {
@@ -802,6 +859,47 @@ export class NorthStarSDK {
     return transferIx;
   }
 
+  async buildRequestUndelegation(
+    signer: Keypair,
+    delegatedAccount: PublicKey,
+    ownerProgramId: PublicKey,
+  ): Promise<{
+    instructions: TransactionInstruction[];
+    feePayer: PublicKey;
+    blockhash: string;
+    lastValidBlockHeight: bigint;
+  }> {
+    const delegationRecordPDA =
+      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const requestPDA =
+      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
+
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
+        { pubkey: signer.publicKey, isSigner: true, isWritable: false },
+        { pubkey: delegatedAccount, isSigner: true, isWritable: false },
+        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: false },
+        { pubkey: sessionPDA, isSigner: false, isWritable: false },
+        { pubkey: requestPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(this.portal.encodeRequestUndelegation()),
+    });
+
+    const latestBlockhash = await this.rpc.getLatestBlockhash();
+
+    return {
+      instructions: [ix],
+      feePayer: signer.publicKey,
+      blockhash: latestBlockhash.blockhash,
+      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
+    };
+  }
+
   async buildUndelegate(
     signer: Keypair,
     delegatedAccount: PublicKey,
@@ -815,6 +913,8 @@ export class NorthStarSDK {
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
     const sessionPDA = await this.portal.deriveSessionPDA();
+    const requestPDA =
+      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
@@ -825,6 +925,7 @@ export class NorthStarSDK {
         { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: sessionPDA, isSigner: false, isWritable: false },
+        { pubkey: requestPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(this.portal.encodeUndelegate()),
     });
@@ -1025,7 +1126,7 @@ export class NorthStarSDK {
     return { signature };
   }
 
-  async undelegate(
+  async requestUndelegation(
     user: PublicKey,
     ownerProgramId: PublicKey,
     signTransaction: WalletSignTransaction,
@@ -1036,28 +1137,77 @@ export class NorthStarSDK {
     const delegationRecordPDA =
       await this.portal.deriveDelegationRecordPDA(delegatedAccount);
     const sessionPDA = await this.portal.deriveSessionPDA();
+    const requestPDA =
+      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
 
     const ix = new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
         { pubkey: user, isSigner: true, isWritable: true },
-        {
-          pubkey: delegatedAccount,
-          isSigner: true,
-          isWritable: true,
-        },
+        { pubkey: user, isSigner: true, isWritable: false },
+        { pubkey: delegatedAccount, isSigner: true, isWritable: false },
+        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
+        { pubkey: delegationRecordPDA, isSigner: false, isWritable: false },
+        { pubkey: sessionPDA, isSigner: false, isWritable: false },
+        { pubkey: requestPDA, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from(this.portal.encodeRequestUndelegation()),
+    });
+
+    const feePayer = signers.feePayerSigner?.publicKey ?? user;
+    const localSigners = this.keypairsFromSignersRecord(signers);
+    const { signature } = await this.sendTxV1(
+      feePayer,
+      [ix],
+      signTransaction,
+      localSigners,
+      options,
+    );
+
+    console.log(`✓ Undelegation requested: ${delegatedAccount.toBase58()}`);
+    console.log(`  Signature: ${signature}`);
+    return { signature };
+  }
+
+  async undelegate(
+    user: PublicKey,
+    ownerProgramId: PublicKey,
+    signTransaction: WalletSignTransaction,
+    signers: UndelegateV1Signers,
+    options: TransactionOptions = {},
+  ): Promise<TransactionResult> {
+    const delegatedAccount = signers.delegatedAccountSigner.publicKey;
+    const request = await this.getUndelegationRequest(delegatedAccount);
+    if (request == null) {
+      throw new Error("undelegation must be requested before it can be finalized");
+    }
+    if (!request.approved) {
+      throw new Error("undelegation is waiting for ER settlement");
+    }
+
+    const delegationRecordPDA =
+      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
+    const sessionPDA = await this.portal.deriveSessionPDA();
+    const requestPDA =
+      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
+
+    const ix = new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: user, isSigner: true, isWritable: true },
+        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
         { pubkey: ownerProgramId, isSigner: false, isWritable: false },
         { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: sessionPDA, isSigner: false, isWritable: false },
+        { pubkey: requestPDA, isSigner: false, isWritable: true },
       ],
       data: Buffer.from(this.portal.encodeUndelegate()),
     });
 
     const feePayer = signers.feePayerSigner?.publicKey ?? user;
-
     const localSigners = this.keypairsFromSignersRecord(signers);
-
     const { signature } = await this.sendTxV1(
       feePayer,
       [ix],
@@ -1068,7 +1218,6 @@ export class NorthStarSDK {
 
     console.log(`✓ Account undelegated: ${delegatedAccount.toBase58()}`);
     console.log(`  Signature: ${signature}`);
-
     return { signature };
   }
 
@@ -1145,8 +1294,11 @@ export class NorthStarSDK {
 export * from "./types";
 export {
   PortalProgram,
+  type UndelegationRequest,
   SESSION_DISCRIMINATOR,
   SESSION_LEN,
+  UNDELEGATION_REQUEST_DISCRIMINATOR,
+  UNDELEGATION_REQUEST_LEN,
 } from "./programs/portal";
 export {
   Connection,

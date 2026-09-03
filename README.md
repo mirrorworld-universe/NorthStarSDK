@@ -263,16 +263,29 @@ await sdk.delegate(
 }
 ```
 
-### `undelegate`
+### `requestUndelegation` / `undelegate`
 
-Revoke delegation.
+Undelegation is a two-phase flow. Request it first, wait for validator approval after ER
+settlement, then finalize it:
 
 ```typescript
+await sdk.requestUndelegation(
+  user,
+  ownerProgramId,
+  signTransaction,
+  signers,
+  options?,
+);
+
+while (!(await sdk.getUndelegationRequest(delegatedAccount))?.approved) {
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+}
+
 await sdk.undelegate(
   user,
-  ownerProgramId,          // must match the owner program passed to delegate
+  ownerProgramId,
   signTransaction,
-  signers,                 // { delegatedAccountSigner, feePayerSigner? }
+  signers,
   options?,
 );
 ```
@@ -289,7 +302,8 @@ Use when composing custom transactions or showing them in an external wallet:
 | `buildCloseSession(signer)` | same |
 | `buildDepositFee(signer, lamports, recipient?)` | same |
 | `buildDelegate(signer, gridId, delegations)` | same, plus generated `buffers` |
-| `buildUndelegate(signer, delegatedAccount, ownerProgramId)` | same |
+| `buildRequestUndelegation(signer, delegatedAccount, ownerProgramId)` | same |
+| `buildUndelegate(signer, delegatedAccount, ownerProgramId)` | final approved undelegation |
 
 Here `instructions` is `TransactionInstruction[]`, and `feePayer` is `signer.publicKey`.
 
@@ -343,8 +357,10 @@ const delegateBalance = sdk.buildDelegateErTokenAccountInstruction({
 ```
 
 For a PDA owner, its program must invoke the token bridge through CPI with `invoke_signed`;
-a normal funded account remains the separate `payer`. Direct Portal undelegation also
-requires the delegated account signature.
+a normal funded account remains the separate `payer`. SPL token undelegation uses
+`buildRequestErTokenAccountUndelegationInstruction`, waits for the request PDA's `approved`
+field, then uses `buildUndelegateErTokenAccountInstruction`. Direct Portal undelegation
+follows the same request/approval flow and requires the delegated account signature.
 
 ---
 
@@ -360,6 +376,7 @@ Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the config
 | `deriveFeeVaultPDA()` | `fee_vault` |
 | `deriveCheckpointCursorPDA(session)` | `checkpoint_cursor` + session |
 | `deriveDelegationRecordPDA(delegatedAccount)` | `delegation` + delegatedAccount |
+| `deriveUndelegationRequestPDA(delegatedAccount)` | `undelegation_request` + delegatedAccount |
 | `deriveDepositReceiptPDA(session, recipient)` | `deposit_receipt` + session + recipient |
 | `deriveSessionBridgePDA(session, mint)` | `session_bridge` + session + mint |
 | `withdrawalSink()` | fixed `NS19999999999999999999999999999999999999999` |
@@ -373,6 +390,7 @@ Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the config
 | `encodeDepositFee({ lamports })` | variant 2 |
 | `encodeDelegate({ gridId })` | variant 3 |
 | `encodeUndelegate()` | variant 4 |
+| `encodeRequestUndelegation()` | variant 28 |
 | `encodeStartWithdrawal({ lamports })` | variant 13 |
 | `encodeRegisterSessionBridge({ mint, bridgeProgram, vault, tokenProgram })` | variant 22 |
 
@@ -385,6 +403,7 @@ After `getAccountInfo` returns `data: Uint8Array`:
 | `parseSession(data)` | Session state |
 | `parseFeeVault(data)` | FeeVault |
 | `parseDelegationRecord(data)` | DelegationRecord |
+| `parseUndelegationRequest(data)` | UndelegationRequest (`approved`, request metadata) |
 | `parseDepositReceipt(data)` | DepositReceipt (`balance`, `withdrawn`) |
 | `parseSessionBridge(data)` | Session bridge discovery state |
 

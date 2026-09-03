@@ -139,6 +139,20 @@ async function waitForTokenAmount(
   );
 }
 
+async function waitForUndelegationApproval(
+  sdk: NorthStarSDK,
+  delegatedAccount: PublicKey,
+) {
+  for (let i = 0; i < 120; i++) {
+    const request = await sdk.getUndelegationRequest(delegatedAccount);
+    if (request?.approved) return request;
+    await sleep(1000);
+  }
+  throw new Error(
+    `Timed out waiting for undelegation approval for ${delegatedAccount.toBase58()}`,
+  );
+}
+
 describe("SPL token bridge live E2E", () => {
   test("mint on L1, deposit to ER, transfer on ER, settle and withdraw on L1", async () => {
     const sdk = new NorthStarSDK({
@@ -453,6 +467,21 @@ describe("SPL token bridge live E2E", () => {
     expect(vaultTokenAfter.amount).toBe(400_000_000n);
     await waitForErAmount(sdk, rpc, bobEr, 50_000_000n, "confirmed");
 
+    await sendTx(
+      sdk,
+      rpc,
+      alice.publicKey,
+      [
+        sdk.buildRequestErTokenAccountUndelegationInstruction({
+          payer: alice.publicKey,
+          authority: bob.publicKey,
+          erTokenAccount: bobEr,
+          session,
+        }),
+      ],
+      [alice, bob],
+    );
+    await waitForUndelegationApproval(sdk, bobEr);
     await sendTx(
       sdk,
       rpc,

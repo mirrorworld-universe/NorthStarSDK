@@ -470,6 +470,28 @@ describe("Real Integration Tests", () => {
     const delegationRecordPDA =
       await sdk.portal.deriveDelegationRecordPDA(delegatedAccount.publicKey);
 
+    await sdk.requestUndelegation(
+      portalUser.publicKey,
+      SYSTEM_PROGRAM_ID,
+      walletSignLocal(portalUser),
+      { delegatedAccountSigner: delegatedAccount },
+      {
+        commitment: "confirmed",
+        skipPreflight: skipPreflight,
+      },
+    );
+
+    let approved = false;
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const request = await sdk.getUndelegationRequest(delegatedAccount.publicKey);
+      if (request?.approved) {
+        approved = true;
+        break;
+      }
+      await sleep(1000);
+    }
+    expect(approved).toBe(true);
+
     await sdk.undelegate(
       portalUser.publicKey,
       SYSTEM_PROGRAM_ID,
@@ -493,7 +515,7 @@ describe("Real Integration Tests", () => {
       expect(raw.every((b) => b === 0)).toBe(true);
     }
     console.log("✓ Undelegate completed");
-  }, 60000);
+  }, 180000);
 
   test("Step 6: Close Session - authority closes active global session", async () => {
     console.log("\n=== Step 6: Close Global Session ===");

@@ -74,6 +74,9 @@ class DelegateInstruction {
 @variant(4)
 class UndelegateInstruction { }
 
+@variant(28)
+class RequestUndelegationInstruction {}
+
 @variant(13)
 class StartWithdrawalInstruction {
   @field({ type: "u64" })
@@ -126,6 +129,17 @@ export interface DelegationRecord {
   bump: number;
 }
 
+export interface UndelegationRequest {
+  discriminator: Uint8Array;
+  session: PublicKey;
+  delegatedAccount: PublicKey;
+  ownerProgram: PublicKey;
+  authority: PublicKey;
+  requestedAtL1Slot: bigint;
+  approved: boolean;
+  bump: number;
+}
+
 /**
  * DepositReceipt state account
  */
@@ -157,6 +171,9 @@ export const FEE_VAULT_DISCRIMINATOR = Uint8Array.from([
 export const DELEGATION_RECORD_DISCRIMINATOR = Uint8Array.from([
   203, 185, 161, 226, 129, 251, 132, 155,
 ]);
+export const UNDELEGATION_REQUEST_DISCRIMINATOR = Uint8Array.from([
+  141, 66, 225, 119, 110, 101, 37, 38,
+]);
 export const DEPOSIT_RECEIPT_DISCRIMINATOR = Uint8Array.from([
   64, 175, 24, 183, 138, 109, 70, 78,
 ]);
@@ -167,6 +184,7 @@ export const SESSION_BRIDGE_DISCRIMINATOR = Uint8Array.from([
 export const SESSION_LEN = 226;
 export const DEPOSIT_RECEIPT_LEN = 89;
 export const SESSION_BRIDGE_LEN = 169;
+export const UNDELEGATION_REQUEST_LEN = 146;
 export const WITHDRAWAL_SINK = new PublicKey(
   "NS19999999999999999999999999999999999999999",
 );
@@ -232,6 +250,15 @@ export class PortalProgram {
     );
   }
 
+  async deriveUndelegationRequestPDA(
+    delegatedAccount: PublicKey,
+  ): Promise<PublicKey> {
+    return PortalProgram.deriveUndelegationRequestPDA(
+      delegatedAccount,
+      this.defaultProgramId,
+    );
+  }
+
   async deriveDepositReceiptPDA(
     session: PublicKey,
     recipient: PublicKey,
@@ -282,6 +309,10 @@ export class PortalProgram {
     return PortalProgram.encodeUndelegate();
   }
 
+  encodeRequestUndelegation(): Uint8Array {
+    return PortalProgram.encodeRequestUndelegation();
+  }
+
   encodeRegisterSessionBridge(params: RegisterSessionBridgeParams): Uint8Array {
     return PortalProgram.encodeRegisterSessionBridge(params);
   }
@@ -296,6 +327,10 @@ export class PortalProgram {
 
   parseDelegationRecord(data: Uint8Array): DelegationRecord {
     return PortalProgram.parseDelegationRecord(data);
+  }
+
+  parseUndelegationRequest(data: Uint8Array): UndelegationRequest {
+    return PortalProgram.parseUndelegationRequest(data);
   }
 
   parseDepositReceipt(data: Uint8Array): DepositReceipt {
@@ -359,6 +394,21 @@ export class PortalProgram {
   ): Promise<PublicKey> {
     const [pda] = PublicKey.findProgramAddressSync(
       [Buffer.from("delegation", "utf8"), delegatedAccount.toBuffer()],
+      programId,
+    );
+    return pda;
+  }
+
+  /**
+   * Derive UndelegationRequest PDA address.
+   * Seeds: ["undelegation_request", delegated_account]
+   */
+  static async deriveUndelegationRequestPDA(
+    delegatedAccount: PublicKey,
+    programId: PublicKey,
+  ): Promise<PublicKey> {
+    const [pda] = PublicKey.findProgramAddressSync(
+      [Buffer.from("undelegation_request", "utf8"), delegatedAccount.toBuffer()],
       programId,
     );
     return pda;
@@ -447,6 +497,10 @@ export class PortalProgram {
     return serialize(new UndelegateInstruction());
   }
 
+  static encodeRequestUndelegation(): Uint8Array {
+    return serialize(new RequestUndelegationInstruction());
+  }
+
   static encodeRegisterSessionBridge(
     params: RegisterSessionBridgeParams,
   ): Uint8Array {
@@ -514,6 +568,29 @@ export class PortalProgram {
       ownerProgram: data.slice(8, 40),
       gridId: readU64LE(data, 40),
       bump: data[48],
+    };
+  }
+
+  static parseUndelegationRequest(data: Uint8Array): UndelegationRequest {
+    assertAccountDataLength(
+      data,
+      UNDELEGATION_REQUEST_LEN,
+      "UndelegationRequest",
+    );
+    assertAccountDiscriminator(
+      data,
+      UNDELEGATION_REQUEST_DISCRIMINATOR,
+      "UndelegationRequest",
+    );
+    return {
+      discriminator: data.slice(0, 8),
+      session: new PublicKey(data.slice(8, 40)),
+      delegatedAccount: new PublicKey(data.slice(40, 72)),
+      ownerProgram: new PublicKey(data.slice(72, 104)),
+      authority: new PublicKey(data.slice(104, 136)),
+      requestedAtL1Slot: readU64LE(data, 136),
+      approved: data[144] !== 0,
+      bump: data[145],
     };
   }
 

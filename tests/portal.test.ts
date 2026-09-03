@@ -5,6 +5,8 @@ import {
   TokenBridgeProgram,
   SESSION_DISCRIMINATOR,
   SESSION_LEN,
+  UNDELEGATION_REQUEST_DISCRIMINATOR,
+  UNDELEGATION_REQUEST_LEN,
 } from "../src";
 
 function readU64LE(data: Uint8Array, offset: number): bigint {
@@ -65,11 +67,14 @@ describe("Portal SDK encoding and account layout", () => {
     expect(readU64LE(data, 57)).toBe(4n);
   });
 
-  test("builds Delegate and Undelegate with required session account", async () => {
+  test("builds the two-phase undelegation flow", async () => {
     const sdk = sdkWithMockRpc();
     const user = Keypair.generate();
     const delegatedAccountSigner = Keypair.generate();
     const sessionPDA = await sdk.portal.deriveSessionPDA();
+    const requestPDA = await sdk.portal.deriveUndelegationRequestPDA(
+      delegatedAccountSigner.publicKey,
+    );
 
     const delegate = await sdk.buildDelegate(user, 7, [
       { delegatedAccountSigner, ownerProgramId: SystemProgram.programId },
@@ -83,17 +88,25 @@ describe("Portal SDK encoding and account layout", () => {
       true,
     );
 
+    const request = await sdk.buildRequestUndelegation(
+      user,
+      delegatedAccountSigner.publicKey,
+      SystemProgram.programId,
+    );
+    expect(request.instructions[0].data[0]).toBe(28);
+    expect(request.instructions[0].keys).toHaveLength(8);
+    expect(request.instructions[0].keys[6].pubkey.equals(requestPDA)).toBe(true);
+
     const undelegate = await sdk.buildUndelegate(
       user,
       delegatedAccountSigner.publicKey,
       SystemProgram.programId,
     );
-    expect(undelegate.instructions[0].keys).toHaveLength(6);
-    expect(undelegate.instructions[0].keys[5].pubkey.equals(sessionPDA)).toBe(
-      true,
-    );
+    expect(undelegate.instructions[0].keys).toHaveLength(7);
+    expect(undelegate.instructions[0].keys[5].pubkey.equals(sessionPDA)).toBe(true);
+    expect(undelegate.instructions[0].keys[6].pubkey.equals(requestPDA)).toBe(true);
     expect(undelegate.instructions[0].keys[1].isSigner).toBe(true);
-    expect(undelegate.instructions[0].keys[5].isWritable).toBe(false);
+    expect(undelegate.instructions[0].keys[6].isWritable).toBe(true);
   });
 
   test("builds DepositFee with readonly session", async () => {
@@ -197,6 +210,31 @@ describe("Portal SDK encoding and account layout", () => {
     expect(session.settlementChecksum[0]).toBe(0xaa);
     expect(session.settlementAccumulator[0]).toBe(0xbb);
     expect(session.bump).toBe(9);
+  });
+
+  test("parses an undelegation request", () => {
+    const session = Keypair.generate().publicKey;
+    const delegatedAccount = Keypair.generate().publicKey;
+    const ownerProgram = Keypair.generate().publicKey;
+    const authority = Keypair.generate().publicKey;
+    const data = new Uint8Array(UNDELEGATION_REQUEST_LEN);
+    data.set(UNDELEGATION_REQUEST_DISCRIMINATOR);
+    data.set(session.toBytes(), 8);
+    data.set(delegatedAccount.toBytes(), 40);
+    data.set(ownerProgram.toBytes(), 72);
+    data.set(authority.toBytes(), 104);
+    writeU64LE(data, 136, 123n);
+    data[144] = 1;
+    data[145] = 254;
+
+    const request = PortalProgram.parseUndelegationRequest(data);
+    expect(request.session.equals(session)).toBe(true);
+    expect(request.delegatedAccount.equals(delegatedAccount)).toBe(true);
+    expect(request.ownerProgram.equals(ownerProgram)).toBe(true);
+    expect(request.authority.equals(authority)).toBe(true);
+    expect(request.requestedAtL1Slot).toBe(123n);
+    expect(request.approved).toBe(true);
+    expect(request.bump).toBe(254);
   });
 
   test("rejects a Session with the wrong discriminator", () => {
