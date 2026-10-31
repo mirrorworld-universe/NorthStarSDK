@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "result": "passed",
+  "scope": "Local RPC qualification with genesis-loaded fixture programs, not hosted deployment or proof acceptance",
+  "observed_at_utc": "2026-10-31T22:44:21Z",
+  "sources": {
+    "native": {
+      "repository": "https://github.com/mirrorworld-universe/northstar",
+      "revision": "9ad107470b7d590c12a2fb3ca5f698953511f4f7",
+      "features": ["northstar/checkpoint-continuity-v2", "solana-cli/checkpoint-continuity-v2"]
+    },
+    "sdk": {
+      "repository": "https://github.com/mirrorworld-universe/NorthStarSDK",
+      "revision": "a1ded108f405963341b7af09df28b0faef263a7f",
+      "spl_test": "tests/spl-token-live-e2e.test.ts",
+      "spl_test_sha256": "25ae6e4d7b5317cae7dfdcbf14841f5c5750c2be24add700104133b536213ad2",
+      "sol_test": "tests/real-integration.test.ts"
+    }
+  },
+  "artifact_sha256": {
+    "native_validator": "333e3c5851c6cbef78dca0de6b8f0e0b39e1a2313090ba715f0725c4b67926b8",
+    "portal_elf": "1e87255a3b7657460b91f37f082607b0b9d892c9b5c3797cdee3d169a55aba2f",
+    "token_bridge_elf": "21c5196494c223b4e5850237b1ae177f9157a4466afc12751f4f291b72a57384",
+    "both_loaded_elf_hashes_checked_before_execution_and_after_restart": true
+  },
+  "fixture": {
+    "genesis": "5HHNL6KBcRL2B5HoA9ZDxZWFQS3HoPHyTN4w6tSyXEHy",
+    "validator": "2T2RQdAcWeBMoR2AGgtceWFbJJhkwYfQJc7Xa8gHh1SS",
+    "portal": "4Mm4dp6zE2FKwpiQsKFGXzBR9isNydcaXQkSCyCxc5aS",
+    "token_bridge": "HeVLVaSa9WnFai9aTRJ3UR2c4jwbMe5nbjagmDP1GbXR",
+    "checkpoint_profile_hex": "4576c9c98c2fde532c492d0b27789553503731d5d87bb2f30aa59359f293dded",
+    "session": "95AHHSAP6cVCymSaQwRDwqmNMPXsrooWicfKHNKdC2HP",
+    "session_nonce": "1",
+    "grid_id": "0",
+    "session_context_base58": "xW2kndXe52bisjYpGryq7ftjcJV6Ay7jZMSHmteoPWL",
+    "mint": "7RdJmN17RRtpes3Rc5XNW3cKk7ZkXxxttpKU5g5PUqNS",
+    "alice": "DTW6eth5DXZtXt1xddt7d5idooD2qeVuvrrnKKsXytjp",
+    "bob": "9BCA8sUAfCCWDk2ytTCU1yvNhXmjDqzNp2PfywVi9iS8"
+  },
+  "observations": {
+    "authenticated_manager_fee_funding_preceded_token_input": true,
+    "authenticated_spl_credit": "600000000",
+    "er_transfer": "250000000",
+    "finalized_l1_spl_payout": "200000000",
+    "finalized_l1_vault_balance": "400000000",
+    "er_alice_after_transfer": "350000000",
+    "er_bob_after_withdrawal": "50000000",
+    "same_ledger_restarted_without_reset": true,
+    "healthy_session_identity_and_cursor_matched_after_restart": true,
+    "consumed_inputs_at_spl_restart": "5",
+    "settled_er_slot_at_spl_restart": "1099511628107",
+    "er_balances_and_finalized_l1_payout_and_custody_matched_after_restart": true,
+    "l1_er_accounts_remained_portal_owned": true,
+    "recovered_er_accounts_were_bridge_owned": true,
+    "sol_payout_cycles_after_spl_restart": 2,
+    "sol_payout_lamports_per_cycle": "1000000",
+    "sol_top_up_between_cycles": true,
+    "spl_balances_payout_and_custody_unchanged_after_sol_cycles": true,
+    "l1_and_er_listeners_verified_stopped_after_tests": true
+  },
+  "limits": {
+    "independent_build_attestation": false,
+    "graceful_shutdown_proven": false,
+    "interruption_during_partial_metadata_settlement_qualified": false,
+    "program_upload_admission_qualified": false,
+    "hosted_devnet_qualified": false,
+    "vrf_callback_qualified_by_this_run": false,
+    "sp1_qualified": false,
+    "portal_proof_acceptance_qualified": false,
+    "production_approved": false
+  }
+}

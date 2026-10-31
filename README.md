@@ -181,6 +181,9 @@ Funded tests reject mainnet. Other than the exact devnet genesis, they permit on
 loopback L1 endpoints inside `NORTHSTAR_SANDBOX=1`. They use disposable development
 accounts and leave active delegated state; do not use production funding keys.
 A type-checked live test is not a successful live run or restart qualification.
+The [local RPC report](tests/evidence/continuity-local-rpc.json) records SPL custody,
+transfer and payout, retained balances after a same-ledger restart, and two SOL
+payouts after that restart. It does not qualify hosted deployment or proof acceptance.
 
 ## Wire contract
 
