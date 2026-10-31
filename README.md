@@ -135,10 +135,11 @@ Deposits use the 17-account custody/input contract. The SDK rejects mismatched
 registry, owner-derived ER account, vault and session bindings. The on-chain
 programs remain responsible for custody and instruction authorization.
 
-Before the first token deposit, call `depositFee` with the token owner as recipient
-to fund its ER SOL balance. Authenticated input execution charges that owner,
-not a separate ER transaction fee payer. L1 SOL alone does not fund the ER owner.
-The SOL funding input must precede the token input in session ingress order.
+Before the first token deposit, call `depositFee` with the session validator as
+recipient to fund the runtime manager's ER SOL balance. The manager signs
+authenticated token-input executions and pays their fees and cursor rent,
+independently of the user transaction fee payer. L1 SOL alone does not fund it.
+This SOL funding input must precede the token input in session ingress order.
 
 ## Deferred payouts
 

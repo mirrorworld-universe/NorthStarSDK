@@ -206,9 +206,9 @@ describe("SPL token bridge live E2E", () => {
     expect(await rpc.getAccountInfo(feeVault)).not.toBeNull();
     console.log("session", session.toBase58());
 
-    // Authenticated token input execution charges its owner, independently of later ER transactions.
+    // The runtime manager signs token-input executions and pays their fees and cursor rent.
     await sdk.depositFee(alice.publicKey, 100_000_000n, walletSignLocal(alice), {},
-      { commitment: "confirmed", maxAttempts: 60 }, alice.publicKey);
+      { commitment: "confirmed", maxAttempts: 60 }, VALIDATOR_IDENTITY);
     await sdk.depositFee(alice.publicKey, 100_000_000n, walletSignLocal(alice), {},
       { commitment: "confirmed", maxAttempts: 60 }, erFeePayer.publicKey);
 
