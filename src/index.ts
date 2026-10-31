@@ -1,304 +1,335 @@
 import {
-  Connection,
-  Keypair,
-  PublicKey,
-  SYSVAR_CLOCK_PUBKEY,
-  SystemProgram,
-  TransactionInstruction,
-  TransactionMessage,
-  VersionedTransaction,
+  Connection, Keypair, PublicKey, SYSVAR_CLOCK_PUBKEY, SystemProgram,
+  TransactionInstruction, TransactionMessage, VersionedTransaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { AccountInfo, Address, NorthStarConfig, NorthStarSyncStatus } from "./types";
 import { EphemeralRollupReader } from "./readers/EphemeralRollupReader";
 import { AccountResolver } from "./readers/AccountResolver";
+import { checkedHash, checkedInteger, Hash32 } from "./programs/continuity";
+import { PortalProgram, WITHDRAWAL_SINK } from "./programs/portal";
+import { TokenBridgeProgram } from "./programs/tokenBridge";
+import { sameBytes, SessionManager, SessionSnapshot } from "./session/SessionManager";
 import {
-  PortalProgram,
-  type UndelegationRequest,
-  WITHDRAWAL_SINK,
-} from "./programs/portal";
-import {
-  TOKEN_BRIDGE_PROGRAM_ID,
-  TokenBridgeProgram,
-} from "./programs/tokenBridge";
-import {
-  getVersionedTxSignatureBase58,
-  sendRawVersionedTransaction,
-  signVersionedTransaction,
-  toPublicKey,
+  getVersionedTxSignatureBase58, sendRawVersionedTransaction,
+  signVersionedTransaction, toPublicKey,
 } from "./solana/kitCompat";
 
-export {
-  getVersionedTxSignatureBase58,
-  signVersionedTransaction,
-  toPublicKey,
-} from "./solana/kitCompat";
-export {
-  TOKEN_BRIDGE_PROGRAM_ID,
-  TokenBridgeProgram,
-} from "./programs/tokenBridge";
+export { getVersionedTxSignatureBase58, signVersionedTransaction, toPublicKey } from "./solana/kitCompat";
+export { TOKEN_BRIDGE_PROGRAM_ID, TokenBridgeProgram } from "./programs/tokenBridge";
+export { PortalProgram, SESSION_DISCRIMINATOR, SESSION_LEN } from "./programs/portal";
+export type { Session, DepositReceipt, SessionBridge } from "./programs/portal";
+export { sessionCommitment } from "./programs/continuity";
+export type { Hash32, SessionIdentity } from "./programs/continuity";
+export type { SessionSnapshot } from "./session/SessionManager";
+export * from "./types";
+export { Connection, Keypair, PublicKey, TransactionInstruction, VersionedTransaction, SystemProgram } from "@solana/web3.js";
 
-/** @solana/web3.js Keypair used wherever a transaction signer is required. */
 export type TransactionSigner = Keypair;
-export type { Address };
-
-export interface TransactionResult {
-  signature: string;
-  slot?: bigint;
-}
-
+export interface TransactionResult { signature: string; slot?: bigint; }
 export interface TransactionOptions {
   commitment?: "processed" | "confirmed" | "finalized";
   skipPreflight?: boolean;
   maxAttempts?: number;
   intervalMs?: number;
 }
-
-export interface DelegateAccount {
-  delegatedAccountSigner: Keypair;
-  ownerProgramId: PublicKey;
+export interface DelegateAccount { delegatedAccountSigner: Keypair; ownerProgramId: PublicKey; }
+export interface DelegateSigners { delegations: DelegateAccount[]; feePayerSigner?: Keypair; }
+export interface SessionSigners { feePayerSigner?: Keypair; }
+export interface DepositFeeSigners { depositorSigner?: Keypair; feePayerSigner?: Keypair; }
+export interface OpenSessionConfig { validator?: PublicKey; settlementIntervalSlots?: number | bigint; }
+export type WalletSignTransaction = (transaction: VersionedTransaction) => Promise<VersionedTransaction>;
+export interface ErSolWithdrawalParams { erSource: PublicKey; l1Recipient: PublicKey; lamports: number | bigint; }
+export interface TokenIngressContext { session: PublicKey; sessionContext: Hash32; sequence: bigint; }
+export interface TransactionPlan {
+  instructions: TransactionInstruction[];
+  feePayer: PublicKey;
+  blockhash: string;
+  lastValidBlockHeight: bigint;
 }
 
-export interface DelegateV1Signers {
-  delegations: DelegateAccount[];
-  feePayerSigner?: Keypair;
-}
-
-/** openSession / closeSession: user is signed via signTransaction; optional local fee payer. */
-export interface SessionV1Signers {
-  feePayerSigner?: Keypair;
-}
-
-export interface OpenSessionConfig {
-  validator?: PublicKey;
-  settlementIntervalSlots?: number;
-}
-
-/** depositFee: depositor and fee payer; if depositorSigner is omitted, the wallet signs user. */
-export interface DepositFeeV1Signers {
-  depositorSigner?: Keypair;
-  feePayerSigner?: Keypair;
-}
-
-/** requestUndelegation / undelegate: one delegated account + optional fee payer. */
-export interface UndelegateV1Signers {
-  delegatedAccountSigner: Keypair;
-  feePayerSigner?: Keypair;
-}
-
-/** Wallet completes signatures on a partially locally-signed transaction; without local signers, this step completes user and any remaining signatures. */
-export type WalletSignTransaction = (
-  transaction: VersionedTransaction,
-) => Promise<VersionedTransaction>;
-
-const SYSTEM_PROGRAM_ID = SystemProgram.programId;
-const MAX_DELEGATIONS_PER_PORTAL_DELEGATE_IX = 3;
-
-export interface ErSolWithdrawalParams {
-  erSource: PublicKey;
-  l1Recipient: PublicKey;
-  lamports: number;
+function unavailable(operation: string): never {
+  throw new Error(`${operation} has no continuity lifecycle binding; no transaction is signed`);
 }
 
 export function encodeSystemProgramAssignData(newProgramOwner: PublicKey): Uint8Array {
-  const data = new Uint8Array(4 + 32);
+  const data = new Uint8Array(36);
   new DataView(data.buffer).setUint32(0, 1, true);
-  data.set(newProgramOwner.toBuffer(), 4);
+  data.set(newProgramOwner.toBytes(), 4);
   return data;
 }
 
-/**
- * Main North Star SDK class
- * Provides unified interface for Ephemeral Rollup interactions
- */
 export class NorthStarSDK {
-  private rpc: Connection;
-  private ephemeral_rpc: Connection;
-  private ephemeralRollupReader: EphemeralRollupReader;
-  public accountResolver: AccountResolver;
-  private config: NorthStarConfig;
-  private portalProgramId: PublicKey;
+  private readonly rpc: Connection;
+  private readonly ephemeral_rpc: Connection;
+  private readonly ephemeralRollupReader: EphemeralRollupReader;
+  private readonly config: NorthStarConfig;
+  private readonly portalProgramId: PublicKey;
+  public readonly accountResolver: AccountResolver;
   public readonly portal: PortalProgram;
   public readonly tokenBridge: TokenBridgeProgram;
 
   constructor(config: NorthStarConfig) {
-    this.config = config;
+    checkedHash(bs58.decode(config.l1GenesisHash), "L1 genesis");
+    this.config = {
+      ...config,
+      checkpointProfile: checkedHash(config.checkpointProfile, "checkpoint profile"),
+      customEndpoints: { ...config.customEndpoints },
+    };
     this.portalProgramId = toPublicKey(config.portalProgramId);
+    checkedHash(this.portalProgramId.toBytes(), "Portal program");
+    const bridge = toPublicKey(config.tokenBridgeProgramId);
+    checkedHash(bridge.toBytes(), "token bridge program");
     this.portal = new PortalProgram(this.portalProgramId);
-    this.tokenBridge = new TokenBridgeProgram();
-
-    const solanaRpc = config.customEndpoints.solana;
-    this.rpc = new Connection(solanaRpc, "confirmed");
-
-    const ephemeralRollupRpc = config.customEndpoints.ephemeralRollup;
-    this.ephemeral_rpc = new Connection(ephemeralRollupRpc, "confirmed");
-    this.ephemeralRollupReader = new EphemeralRollupReader(ephemeralRollupRpc);
-
-    this.accountResolver = new AccountResolver(
-      this.ephemeralRollupReader,
-      this.rpc,
-    );
-
-    console.log("✓ North Star SDK initialized");
-    console.log(`  Solana Network: ${solanaRpc}`);
-    console.log(`  Ephemeral Rollup RPC: ${ephemeralRollupRpc}`);
-    console.log(`  Portal Program: ${this.portalProgramId.toBase58()}`);
+    this.tokenBridge = new TokenBridgeProgram(bridge);
+    this.rpc = new Connection(config.customEndpoints.solana, "confirmed");
+    this.ephemeral_rpc = new Connection(config.customEndpoints.ephemeralRollup, "confirmed");
+    this.ephemeralRollupReader = new EphemeralRollupReader(config.customEndpoints.ephemeralRollup);
+    this.accountResolver = new AccountResolver(this.ephemeralRollupReader, this.rpc);
   }
 
-  async generateKeyPair(): Promise<Keypair> {
-    return Keypair.generate();
+  private sessionManager(): SessionManager {
+    return new SessionManager(this.rpc, this.portal, this.config.l1GenesisHash, this.config.checkpointProfile);
   }
 
-  async createKeyPairFromBase58(privateKeyBase58: string): Promise<Keypair> {
-    const bytes = Uint8Array.from(bs58.decode(privateKeyBase58.trim()));
-    if (bytes.length === 64) {
-      return Keypair.fromSecretKey(bytes);
+  async getSessionSnapshot(): Promise<SessionSnapshot> {
+    return this.sessionManager().getSession();
+  }
+
+  async getExecutionSession(): Promise<SessionSnapshot> {
+    const snapshot = await this.getSessionSnapshot();
+    await this.assertErSession(snapshot);
+    return snapshot;
+  }
+
+  private async assertErSession(snapshot: SessionSnapshot): Promise<void> {
+    const status = await this.ephemeralRollupReader.getSyncStatus();
+    if (status.isSyncing || status.latestSyncedSlot < status.latestL1Slot || status.checkpointError != null) {
+      throw new Error("ER runtime is syncing or has a checkpoint error");
     }
-    if (bytes.length === 32) {
-      return Keypair.fromSeed(bytes);
+    const address = await this.ephemeralRollupReader.getSessionPda();
+    if (!address?.equals(snapshot.address)) throw new Error("ER session differs from L1");
+    const account = await this.ephemeral_rpc.getAccountInfo(snapshot.address, "confirmed");
+    if (!account || account.executable || !account.owner.equals(this.portalProgramId)) {
+      throw new Error("ER session account is missing or has the wrong owner");
     }
-    throw new Error(
-      `Private key decodes to ${bytes.length} bytes; expected 32 or 64.`,
-    );
+    const state = this.portal.parseSession(account.data);
+    if (!sameBytes(this.portal.sessionContext(snapshot.address, state), snapshot.context)) {
+      throw new Error("ER session incarnation differs from L1");
+    }
   }
 
-  async getAccountInfo(
-    address: PublicKey,
-    search_source: "ephemeral" | "solana",
-  ): Promise<AccountInfo> {
-    return await this.accountResolver.resolve(address, search_source);
+  async generateKeyPair(): Promise<Keypair> { return Keypair.generate(); }
+  async createKeyPairFromBase58(value: string): Promise<Keypair> {
+    const bytes = bs58.decode(value.trim());
+    if (bytes.length === 64) return Keypair.fromSecretKey(bytes);
+    if (bytes.length === 32) return Keypair.fromSeed(bytes);
+    throw new Error(`Private key decodes to ${bytes.length} bytes; expected 32 or 64`);
+  }
+  async getAccountInfo(address: PublicKey, source: "ephemeral" | "solana"): Promise<AccountInfo> {
+    return this.accountResolver.resolve(address, source);
+  }
+  async getMultipleAccounts(addresses: PublicKey[], source: "ephemeral" | "solana"): Promise<AccountInfo[]> {
+    return this.accountResolver.resolveMultiple(addresses, source);
+  }
+  getRpc(): Connection { return this.rpc; }
+  getEphemeralRpc(): Connection { return this.ephemeral_rpc; }
+  getPortalProgramId(): PublicKey { return this.portalProgramId; }
+  async getEphemeralRollupSyncStatus(): Promise<NorthStarSyncStatus> {
+    return this.ephemeralRollupReader.getSyncStatus();
   }
 
-  async getMultipleAccounts(
-    addresses: PublicKey[],
-    search_source: "ephemeral" | "solana",
-  ): Promise<AccountInfo[]> {
-    return await this.accountResolver.resolveMultiple(addresses, search_source);
+  private async openInstruction(
+    user: PublicKey, gridId: number | bigint, ttlSlots: number | bigint,
+    feeCap: number | bigint, options: OpenSessionConfig,
+  ): Promise<TransactionInstruction> {
+    await this.sessionManager().verifyNetwork();
+    return new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: user, isSigner: true, isWritable: true },
+        { pubkey: await this.portal.deriveSessionPDA(), isSigner: false, isWritable: true },
+        { pubkey: await this.portal.deriveFeeVaultPDA(), isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: await this.portal.deriveSessionEpochPDA(), isSigner: false, isWritable: true },
+      ],
+      data: Buffer.from(this.portal.encodeOpenSession({
+        gridId, ttlSlots, feeCap, validator: options.validator ?? user,
+        settlementIntervalSlots: options.settlementIntervalSlots,
+        l1Genesis: bs58.decode(this.config.l1GenesisHash), profile: this.config.checkpointProfile,
+      })),
+    });
   }
 
-  /** Solana L1 JSON-RPC connection (@solana/web3.js). */
-  getRpc(): Connection {
-    return this.rpc;
+  private async depositInstruction(user: PublicKey, amount: number | bigint, recipient: PublicKey): Promise<TransactionInstruction> {
+    const snapshot = await this.getSessionSnapshot();
+    return new TransactionInstruction({
+      programId: this.portalProgramId,
+      keys: [
+        { pubkey: user, isSigner: true, isWritable: true },
+        { pubkey: snapshot.address, isSigner: false, isWritable: true },
+        { pubkey: await this.portal.deriveDepositReceiptPDA(snapshot.context, recipient), isSigner: false, isWritable: true },
+        { pubkey: recipient, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: await this.portal.deriveIngressRecordPDA(snapshot.context, snapshot.nextSequence), isSigner: false, isWritable: true },
+      ],
+      data: Buffer.from(this.portal.encodeDepositFee({ lamports: checkedInteger(amount, 64, "deposit") })),
+    });
   }
 
-  /** Ephemeral Rollup JSON-RPC connection (@solana/web3.js). */
-  getEphemeralRpc(): Connection {
-    return this.ephemeral_rpc;
+  private async plan(feePayer: PublicKey, instructions: TransactionInstruction[]): Promise<TransactionPlan> {
+    const latest = await this.rpc.getLatestBlockhash();
+    return {
+      feePayer, instructions, blockhash: latest.blockhash,
+      lastValidBlockHeight: checkedInteger(latest.lastValidBlockHeight, 64, "block height")
+    };
   }
 
-  getPortalProgramId(): PublicKey {
-    return this.portalProgramId;
+  async buildOpenSession(
+    signer: Keypair, gridId: number | bigint, ttlSlots: number | bigint = 2000,
+    feeCap: number | bigint = 1_000_000, options: OpenSessionConfig = {},
+  ): Promise<TransactionPlan> {
+    return this.plan(signer.publicKey, [await this.openInstruction(signer.publicKey, gridId, ttlSlots, feeCap, options)]);
+  }
+
+  async buildDepositFee(signer: Keypair, amount: number | bigint, recipient = signer.publicKey): Promise<TransactionPlan> {
+    return this.plan(signer.publicKey, [await this.depositInstruction(signer.publicKey, amount, recipient)]);
+  }
+
+  private async walletDelegations(user: PublicKey, grid: number | bigint, delegations: DelegateAccount[]): Promise<{
+    instructions: TransactionInstruction[]; buffers: Keypair[];
+  }> {
+    if (delegations.length === 0) throw new Error("Delegation requires at least one account");
+    if (delegations.length > 2) throw new Error("Wallet delegation accepts at most two accounts per transaction");
+    const snapshot = await this.getSessionSnapshot();
+    const gridId = checkedInteger(grid, 64, "grid id");
+    if (gridId !== snapshot.state.gridId) throw new Error("Delegation grid differs from the session");
+    const addresses = delegations.map(value => value.delegatedAccountSigner.publicKey.toBase58());
+    if (new Set(addresses).size !== addresses.length) throw new Error("Delegation accounts must be distinct");
+    const instructions: TransactionInstruction[] = [];
+    const buffers: Keypair[] = [];
+    const rent = await this.rpc.getMinimumBalanceForRentExemption(0);
+    checkedInteger(rent, 64, "buffer rent");
+    for (const [index, delegation] of delegations.entries()) {
+      if (!delegation.ownerProgramId.equals(SystemProgram.programId)) {
+        throw new Error("Program-owned accounts require delegation CPI from their owner program");
+      }
+      const address = delegation.delegatedAccountSigner.publicKey;
+      const account = await this.rpc.getAccountInfo(address, "confirmed");
+      if (!account || account.executable || account.data.length !== 0 ||
+        (!account.owner.equals(SystemProgram.programId) && !account.owner.equals(this.portalProgramId))) {
+        throw new Error("Wallet delegation requires an existing empty system account or a pre-staged Portal account");
+      }
+      const buffer = Keypair.generate();
+      buffers.push(buffer);
+      instructions.push(SystemProgram.createAccount({
+        fromPubkey: user, newAccountPubkey: buffer.publicKey,
+        lamports: rent, space: 0, programId: SystemProgram.programId
+      }));
+      if (account.owner.equals(SystemProgram.programId)) {
+        instructions.push(SystemProgram.assign({ accountPubkey: address, programId: this.portalProgramId }));
+      }
+      const sequence = checkedInteger(snapshot.nextSequence + BigInt(index), 64, "input sequence");
+      instructions.push(new TransactionInstruction({
+        programId: this.portalProgramId,
+        keys: [
+          { pubkey: user, isSigner: true, isWritable: true },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          { pubkey: snapshot.address, isSigner: false, isWritable: true },
+          { pubkey: address, isSigner: true, isWritable: true },
+          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+          { pubkey: await this.portal.deriveDelegationRecordPDA(address), isSigner: false, isWritable: true },
+          { pubkey: buffer.publicKey, isSigner: false, isWritable: false },
+          { pubkey: await this.portal.deriveIngressRecordPDA(snapshot.context, sequence), isSigner: false, isWritable: true },
+        ],
+        data: Buffer.from(this.portal.encodeDelegate({ gridId })),
+      }));
+    }
+    return { instructions, buffers };
+  }
+
+  async buildDelegate(signer: Keypair, grid: number | bigint, delegations: DelegateAccount[]): Promise<TransactionPlan & { buffers: Keypair[] }> {
+    const value = await this.walletDelegations(signer.publicKey, grid, delegations);
+    return { ...await this.plan(signer.publicKey, value.instructions), buffers: value.buffers };
   }
 
   async buildRegisterSessionBridgeInstruction(params: {
-    payer: PublicKey;
-    session: PublicKey;
-    mint: PublicKey;
-    vault?: PublicKey;
-    bridgeProgram?: PublicKey;
-    tokenProgram: PublicKey;
+    payer: PublicKey; session: PublicKey; mint: PublicKey; vault?: PublicKey;
+    bridgeProgram?: PublicKey; tokenProgram: PublicKey;
   }): Promise<TransactionInstruction> {
-    const bridgeProgram = params.bridgeProgram ?? TOKEN_BRIDGE_PROGRAM_ID;
-    const sessionBridge = await this.portal.deriveSessionBridgePDA(
-      params.session,
-      params.mint,
-    );
-    const vault =
-      params.vault ??
-      TokenBridgeProgram.deriveVaultPDA(sessionBridge, bridgeProgram);
+    const snapshot = await this.getSessionSnapshot();
+    const bridge = params.bridgeProgram ?? this.tokenBridge.programId;
+    if (!params.session.equals(snapshot.address) || !params.payer.equals(snapshot.state.authority) || !bridge.equals(this.tokenBridge.programId)) {
+      throw new Error("Bridge registration differs from the configured session authority or bridge program");
+    }
+    const registry = await this.portal.deriveSessionBridgePDA(snapshot.context, params.mint);
+    const vault = this.tokenBridge.deriveVaultPDA(registry);
+    if (params.vault && !params.vault.equals(vault)) throw new Error("Bridge vault is not canonical");
     return new TransactionInstruction({
       programId: this.portalProgramId,
       keys: [
         { pubkey: params.payer, isSigner: true, isWritable: true },
-        { pubkey: params.session, isSigner: false, isWritable: false },
-        { pubkey: sessionBridge, isSigner: false, isWritable: true },
+        { pubkey: snapshot.address, isSigner: false, isWritable: false },
+        { pubkey: registry, isSigner: false, isWritable: true },
         { pubkey: params.mint, isSigner: false, isWritable: false },
-        { pubkey: bridgeProgram, isSigner: false, isWritable: false },
+        { pubkey: bridge, isSigner: false, isWritable: false },
         { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
-        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
       ],
-      data: Buffer.from(
-        this.portal.encodeRegisterSessionBridge({
-          mint: params.mint,
-          bridgeProgram,
-          vault,
-          tokenProgram: params.tokenProgram,
-        }),
-      ),
+      data: Buffer.from(this.portal.encodeRegisterSessionBridge({ mint: params.mint, bridgeProgram: bridge, vault, tokenProgram: params.tokenProgram })),
     });
   }
 
-  async buildInitializeTokenVaultInstruction(params: {
-    payer: PublicKey;
-    sessionBridge: PublicKey;
-    vaultTokenAccount: PublicKey;
-  }): Promise<TransactionInstruction> {
+  async buildInitializeTokenVaultInstruction(params: { payer: PublicKey; sessionBridge: PublicKey; vaultTokenAccount: PublicKey }): Promise<TransactionInstruction> {
     return new TransactionInstruction({
       programId: this.tokenBridge.programId,
       keys: [
         { pubkey: params.payer, isSigner: true, isWritable: true },
-        {
-          pubkey: this.tokenBridge.deriveVaultPDA(params.sessionBridge),
-          isSigner: false,
-          isWritable: true,
-        },
+        { pubkey: this.tokenBridge.deriveVaultPDA(params.sessionBridge), isSigner: false, isWritable: true },
         { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
         { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
         { pubkey: params.vaultTokenAccount, isSigner: false, isWritable: false },
-        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(this.tokenBridge.encodeInitializeVault()),
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      ], data: Buffer.from(this.tokenBridge.encodeInitializeVault()),
     });
   }
 
-  async buildInitializeErTokenAccountInstruction(params: {
-    payer: PublicKey;
-    sessionBridge: PublicKey;
-    owner: PublicKey;
-  }): Promise<TransactionInstruction> {
+  async buildInitializeErTokenAccountInstruction(params: { payer: PublicKey; sessionBridge: PublicKey; owner: PublicKey }): Promise<TransactionInstruction> {
     return new TransactionInstruction({
       programId: this.tokenBridge.programId,
       keys: [
         { pubkey: params.payer, isSigner: true, isWritable: true },
-        {
-          pubkey: this.tokenBridge.deriveErTokenAccountPDA(
-            params.sessionBridge,
-            params.owner,
-          ),
-          isSigner: false,
-          isWritable: true,
-        },
+        { pubkey: this.tokenBridge.deriveErTokenAccountPDA(params.sessionBridge, params.owner), isSigner: false, isWritable: true },
         { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
         { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
-        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(
-        this.tokenBridge.encodeInitializeErTokenAccount(params.owner),
-      ),
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      ], data: Buffer.from(this.tokenBridge.encodeInitializeErTokenAccount(params.owner)),
     });
   }
 
-  buildTokenBridgeDepositInstruction(params: {
-    payer: PublicKey;
-    owner: PublicKey;
-    vault: PublicKey;
-    erTokenAccount: PublicKey;
-    sessionBridge: PublicKey;
-    sourceTokenAccount: PublicKey;
-    vaultTokenAccount: PublicKey;
-    mint: PublicKey;
-    tokenProgram: PublicKey;
-    amount: number | bigint;
-    decimals: number;
+  private tokenBinding(context: Hash32, mint: PublicKey, registry: PublicKey, owner: PublicKey, account: PublicKey): void {
+    const expected = PublicKey.findProgramAddressSync([Buffer.from("session_bridge_v2"), checkedHash(context, "session context"), mint.toBytes()], this.portalProgramId)[0];
+    if (!expected.equals(registry) || !this.tokenBridge.deriveErTokenAccountPDA(registry, owner).equals(account)) {
+      throw new Error("Token registry or ER account differs from the session context and owner");
+    }
+  }
+
+  private ingressAddress(params: TokenIngressContext): PublicKey {
+    const session = PublicKey.findProgramAddressSync([Buffer.from("session")], this.portalProgramId)[0];
+    if (!params.session.equals(session) || params.sequence <= 0n) throw new Error("Invalid token input session or sequence");
+    return PublicKey.findProgramAddressSync([Buffer.from("ingress_v2"), checkedHash(params.sessionContext, "session context"),
+    uintSequence(params.sequence)], this.portalProgramId)[0];
+  }
+
+  buildTokenBridgeDepositInstruction(params: TokenIngressContext & {
+    payer: PublicKey; owner: PublicKey; vault: PublicKey; erTokenAccount: PublicKey; sessionBridge: PublicKey;
+    sourceTokenAccount: PublicKey; vaultTokenAccount: PublicKey; mint: PublicKey; tokenProgram: PublicKey;
+    amount: number | bigint; decimals: number;
   }): TransactionInstruction {
-    const depositReceipt = this.tokenBridge.deriveDepositReceiptPDA(
-      params.sessionBridge,
-      params.erTokenAccount,
-    );
-    const [delegationRecord] = PublicKey.findProgramAddressSync(
-      [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
-      this.portalProgramId,
-    );
+    this.tokenBinding(params.sessionContext, params.mint, params.sessionBridge, params.owner, params.erTokenAccount);
+    if (!params.vault.equals(this.tokenBridge.deriveVaultPDA(params.sessionBridge))) throw new Error("Token vault is not canonical");
+    const delegation = PublicKey.findProgramAddressSync([Buffer.from("delegation"), params.erTokenAccount.toBytes()], this.portalProgramId)[0];
+    const request = PublicKey.findProgramAddressSync([Buffer.from("undelegation_request"), params.erTokenAccount.toBytes()], this.portalProgramId)[0];
     return new TransactionInstruction({
       programId: this.tokenBridge.programId,
       keys: [
@@ -312,46 +343,58 @@ export class NorthStarSDK {
         { pubkey: params.vaultTokenAccount, isSigner: false, isWritable: true },
         { pubkey: params.mint, isSigner: false, isWritable: false },
         { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
-        { pubkey: depositReceipt, isSigner: false, isWritable: true },
-        { pubkey: delegationRecord, isSigner: false, isWritable: false },
-        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(
-        this.tokenBridge.encodeDeposit(params.amount, params.decimals),
-      ),
+        { pubkey: this.tokenBridge.deriveDepositReceiptPDA(params.sessionBridge, params.erTokenAccount), isSigner: false, isWritable: true },
+        { pubkey: delegation, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: request, isSigner: false, isWritable: false },
+        { pubkey: params.session, isSigner: false, isWritable: true },
+        { pubkey: this.tokenBridge.deriveOriginPDA(params.erTokenAccount), isSigner: false, isWritable: false },
+        { pubkey: this.ingressAddress(params), isSigner: false, isWritable: true },
+      ], data: Buffer.from(this.tokenBridge.encodeDeposit(params.amount, params.decimals)),
     });
   }
 
-  buildTokenBridgeTransferInstruction(params: {
-    authority: PublicKey;
-    sourceErTokenAccount: PublicKey;
-    destinationErTokenAccount: PublicKey;
-    amount: number | bigint;
+  buildDelegateErTokenAccountInstruction(params: TokenIngressContext & {
+    payer: PublicKey; owner: PublicKey; erTokenAccount: PublicKey; sessionBridge: PublicKey; mint: PublicKey; gridId: number | bigint;
   }): TransactionInstruction {
+    this.tokenBinding(params.sessionContext, params.mint, params.sessionBridge, params.owner, params.erTokenAccount);
+    const delegation = PublicKey.findProgramAddressSync([Buffer.from("delegation"), params.erTokenAccount.toBytes()], this.portalProgramId)[0];
+    return new TransactionInstruction({
+      programId: this.tokenBridge.programId,
+      keys: [
+        { pubkey: params.payer, isSigner: true, isWritable: true },
+        { pubkey: params.owner, isSigner: true, isWritable: false },
+        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
+        { pubkey: this.tokenBridge.programId, isSigner: false, isWritable: false },
+        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
+        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
+        { pubkey: params.session, isSigner: false, isWritable: true },
+        { pubkey: delegation, isSigner: false, isWritable: true },
+        { pubkey: this.tokenBridge.deriveBufferPDA(params.erTokenAccount), isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: this.tokenBridge.deriveDepositReceiptPDA(params.sessionBridge, params.erTokenAccount), isSigner: false, isWritable: false },
+        { pubkey: this.tokenBridge.deriveOriginPDA(params.erTokenAccount), isSigner: false, isWritable: true },
+        { pubkey: this.ingressAddress(params), isSigner: false, isWritable: true },
+      ], data: Buffer.from(this.tokenBridge.encodeDelegateErTokenAccount(params.gridId)),
+    });
+  }
+
+  buildTokenBridgeTransferInstruction(params: { authority: PublicKey; sourceErTokenAccount: PublicKey; destinationErTokenAccount: PublicKey; amount: number | bigint }): TransactionInstruction {
     return new TransactionInstruction({
       programId: this.tokenBridge.programId,
       keys: [
         { pubkey: params.authority, isSigner: true, isWritable: false },
         { pubkey: params.sourceErTokenAccount, isSigner: false, isWritable: true },
-        {
-          pubkey: params.destinationErTokenAccount,
-          isSigner: false,
-          isWritable: true,
-        },
-      ],
-      data: Buffer.from(this.tokenBridge.encodeTransfer(params.amount)),
+        { pubkey: params.destinationErTokenAccount, isSigner: false, isWritable: true },
+      ], data: Buffer.from(this.tokenBridge.encodeTransfer(params.amount)),
     });
   }
 
   buildTokenBridgeStartWithdrawalInstruction(params: {
-    owner: PublicKey;
-    erTokenAccount: PublicKey;
-    sessionBridge: PublicKey;
-    destinationTokenAccount: PublicKey;
-    tokenProgram: PublicKey;
-    amount: number | bigint;
-    decimals: number;
+    owner: PublicKey; erTokenAccount: PublicKey; sessionBridge: PublicKey; sessionContext: Hash32;
+    destinationTokenAccount: PublicKey; tokenProgram: PublicKey; mint: PublicKey; amount: number | bigint; decimals: number;
   }): TransactionInstruction {
+    this.tokenBinding(params.sessionContext, params.mint, params.sessionBridge, params.owner, params.erTokenAccount);
     return new TransactionInstruction({
       programId: this.tokenBridge.programId,
       keys: [
@@ -359,952 +402,108 @@ export class NorthStarSDK {
         { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
         { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
         { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
-        {
-          pubkey: params.destinationTokenAccount,
-          isSigner: false,
-          isWritable: false,
-        },
+        { pubkey: params.destinationTokenAccount, isSigner: false, isWritable: false },
         { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(
-        this.tokenBridge.encodeStartWithdrawal(params.amount, params.decimals),
-      ),
-    });
-  }
-
-  buildTokenBridgeWithdrawInstruction(params: {
-    owner: PublicKey;
-    vault: PublicKey;
-    erTokenAccount: PublicKey;
-    sessionBridge: PublicKey;
-    vaultTokenAccount: PublicKey;
-    destinationTokenAccount: PublicKey;
-    mint: PublicKey;
-    tokenProgram: PublicKey;
-    amount: number | bigint;
-    decimals: number;
-  }): TransactionInstruction {
-    return new TransactionInstruction({
-      programId: this.tokenBridge.programId,
-      keys: [
-        { pubkey: params.owner, isSigner: true, isWritable: false },
-        { pubkey: params.vault, isSigner: false, isWritable: true },
-        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
-        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
-        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
-        { pubkey: params.vaultTokenAccount, isSigner: false, isWritable: true },
-        { pubkey: params.destinationTokenAccount, isSigner: false, isWritable: true },
         { pubkey: params.mint, isSigner: false, isWritable: false },
-        { pubkey: params.tokenProgram, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(
-        this.tokenBridge.encodeWithdraw(params.amount, params.decimals),
-      ),
+      ], data: Buffer.from(this.tokenBridge.encodeStartWithdrawal(params.amount, params.decimals)),
     });
   }
 
-  buildDelegateErTokenAccountInstruction(params: {
-    payer: PublicKey;
-    owner: PublicKey;
-    erTokenAccount: PublicKey;
-    sessionBridge: PublicKey;
-    session: PublicKey;
-    gridId: number | bigint;
-  }): TransactionInstruction {
-    const [delegationRecord] = PublicKey.findProgramAddressSync(
-      [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
-      this.portalProgramId,
-    );
-    const buffer = this.tokenBridge.deriveBufferPDA(params.erTokenAccount);
-    return new TransactionInstruction({
-      programId: this.tokenBridge.programId,
+  async buildErSolWithdrawalInstructions(params: ErSolWithdrawalParams): Promise<TransactionInstruction[]> {
+    await this.getExecutionSession();
+    return [new TransactionInstruction({
+      programId: this.portalProgramId,
       keys: [
-        { pubkey: params.payer, isSigner: true, isWritable: true },
-        { pubkey: params.owner, isSigner: true, isWritable: false },
-        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
-        { pubkey: this.tokenBridge.programId, isSigner: false, isWritable: false },
-        { pubkey: params.sessionBridge, isSigner: false, isWritable: false },
-        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
-        { pubkey: params.session, isSigner: false, isWritable: false },
-        { pubkey: delegationRecord, isSigner: false, isWritable: true },
-        { pubkey: buffer, isSigner: false, isWritable: true },
-        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(this.tokenBridge.encodeDelegateErTokenAccount(params.gridId)),
-    });
+        { pubkey: params.erSource, isSigner: true, isWritable: true },
+        { pubkey: params.l1Recipient, isSigner: false, isWritable: false },
+        { pubkey: WITHDRAWAL_SINK, isSigner: false, isWritable: true },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
+      ], data: Buffer.from(this.portal.encodeStartWithdrawal({ lamports: checkedInteger(params.lamports, 64, "withdrawal") })),
+    })];
   }
 
-  buildRequestErTokenAccountUndelegationInstruction(params: {
-    payer: PublicKey;
-    authority: PublicKey;
-    erTokenAccount: PublicKey;
-    session: PublicKey;
-  }): TransactionInstruction {
-    const [delegationRecord] = PublicKey.findProgramAddressSync(
-      [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
-      this.portalProgramId,
-    );
-    const [undelegationRequest] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("undelegation_request", "utf8"),
-        params.erTokenAccount.toBuffer(),
-      ],
-      this.portalProgramId,
-    );
-    return new TransactionInstruction({
-      programId: this.tokenBridge.programId,
-      keys: [
-        { pubkey: params.payer, isSigner: true, isWritable: true },
-        { pubkey: params.authority, isSigner: true, isWritable: false },
-        { pubkey: params.erTokenAccount, isSigner: false, isWritable: false },
-        { pubkey: this.tokenBridge.programId, isSigner: false, isWritable: false },
-        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
-        { pubkey: params.session, isSigner: false, isWritable: false },
-        { pubkey: delegationRecord, isSigner: false, isWritable: false },
-        { pubkey: undelegationRequest, isSigner: false, isWritable: true },
-        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(this.tokenBridge.encodeRequestUndelegation()),
-    });
+  async buildErSolWithdrawal(recipient: PublicKey, amount: number | bigint): Promise<TransactionInstruction> {
+    return (await this.buildErSolWithdrawalInstructions({ erSource: recipient, l1Recipient: recipient, lamports: amount }))[0];
   }
 
-  buildUndelegateErTokenAccountInstruction(params: {
-    authority: PublicKey;
-    erTokenAccount: PublicKey;
-    session: PublicKey;
-  }): TransactionInstruction {
-    const [delegationRecord] = PublicKey.findProgramAddressSync(
-      [Buffer.from("delegation", "utf8"), params.erTokenAccount.toBuffer()],
-      this.portalProgramId,
-    );
-    const [undelegationRequest] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("undelegation_request", "utf8"),
-        params.erTokenAccount.toBuffer(),
-      ],
-      this.portalProgramId,
-    );
-    const buffer = this.tokenBridge.deriveBufferPDA(params.erTokenAccount);
-    return new TransactionInstruction({
-      programId: this.tokenBridge.programId,
-      keys: [
-        { pubkey: params.authority, isSigner: true, isWritable: true },
-        { pubkey: params.erTokenAccount, isSigner: false, isWritable: true },
-        { pubkey: this.tokenBridge.programId, isSigner: false, isWritable: false },
-        { pubkey: this.portalProgramId, isSigner: false, isWritable: false },
-        { pubkey: params.session, isSigner: false, isWritable: false },
-        { pubkey: delegationRecord, isSigner: false, isWritable: true },
-        { pubkey: buffer, isSigner: false, isWritable: true },
-        { pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: undelegationRequest, isSigner: false, isWritable: true },
-      ],
-      data: Buffer.from(this.tokenBridge.encodeUndelegateErTokenAccount()),
-    });
-  }
-
-  /** Get the ER node's L1 sync cursor. */
-  async getEphemeralRollupSyncStatus(): Promise<NorthStarSyncStatus> {
-    return await this.ephemeralRollupReader.getSyncStatus();
-  }
-
-  async getUndelegationRequest(
-    delegatedAccount: PublicKey,
-  ): Promise<UndelegationRequest | null> {
-    const requestPDA =
-      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
-    const account = await this.rpc.getAccountInfo(requestPDA);
-    return account == null
-      ? null
-      : this.portal.parseUndelegationRequest(account.data);
-  }
-
-  private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-  }
-
-  async confirmSignature(
-    signature: string,
-    options: TransactionOptions = {},
-  ): Promise<void> {
-    const commitment: string = options.commitment || "confirmed";
-    const maxAttempts = options.maxAttempts ?? 20;
-    const intervalMs = options.intervalMs ?? 1000;
-
-    for (let i = 0; i < maxAttempts; i++) {
-      const statuses = await this.rpc.getSignatureStatuses([signature]);
-      const status = statuses.value?.[0];
-
-      if (status?.err) {
-        throw new Error(
-          `Transaction failed on-chain: status.err ${JSON.stringify(status.err)}`,
-        );
-      }
-
-      const cs = status?.confirmationStatus;
-      if (!cs) {
-        await this.sleep(intervalMs);
-        continue;
-      }
-      if (cs === "finalized") {
-        return;
-      }
-      if (commitment === "confirmed" && cs === "confirmed") {
-        return;
-      }
-      if (
-        commitment === "processed" &&
-        (cs === "processed" || cs === "confirmed" || cs === "finalized")
-      ) {
-        return;
-      }
-
-      await this.sleep(intervalMs);
+  async confirmSignature(signature: string, options: TransactionOptions = {}): Promise<void> {
+    const attempts = options.maxAttempts ?? 20;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const status = (await this.rpc.getSignatureStatuses([signature])).value?.[0];
+      if (status?.err) throw new Error(`Transaction failed on-chain: ${JSON.stringify(status.err)}`);
+      const commitment = status?.confirmationStatus;
+      if (commitment === "finalized" || commitment === "confirmed" && options.commitment !== "finalized" ||
+        commitment === "processed" && options.commitment === "processed") return;
+      if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, options.intervalMs ?? 1000));
     }
-
-    throw new Error(
-      `Transaction confirmation timeout (HTTP polling): ${String(signature)}`,
-    );
+    throw new Error(`Transaction confirmation timeout: ${signature}`);
   }
 
-  private async sendTransactionWithoutConfirming(
-    transaction: VersionedTransaction,
-    options: { commitment?: string; skipPreflight?: boolean },
-  ): Promise<void> {
-    await sendRawVersionedTransaction(this.rpc, transaction, {
-      commitment: (options.commitment as any) ?? "confirmed",
-      skipPreflight: options.skipPreflight ?? true,
-    });
-  }
-
-  async sendAndConfirmTransactionWithoutWebsocket(
-    transaction: VersionedTransaction,
-    options: TransactionOptions = {},
-  ): Promise<{ signature: string }> {
-    const commitment = options.commitment || "confirmed";
-    const skipPreflight = options.skipPreflight ?? true;
-    await this.sendTransactionWithoutConfirming(transaction, {
-      commitment,
-      skipPreflight,
-    });
+  async sendAndConfirmTransactionWithoutWebsocket(transaction: VersionedTransaction, options: TransactionOptions = {}): Promise<{ signature: string }> {
+    await sendRawVersionedTransaction(this.rpc, transaction, { commitment: options.commitment ?? "confirmed", skipPreflight: options.skipPreflight ?? false });
     const signature = getVersionedTxSignatureBase58(transaction);
     await this.confirmSignature(signature, options);
     return { signature };
   }
 
-  private dedupeSigners(signers: Keypair[]): Keypair[] {
-    const seen = new Set<string>();
-    const out: Keypair[] = [];
-    for (const k of signers) {
-      const b = k.publicKey.toBase58();
-      if (!seen.has(b)) {
-        seen.add(b);
-        out.push(k);
-      }
-    }
-    return out;
-  }
-
-  /** Collects all defined Keypairs from a signers object via Object.keys (skips undefined). */
-  private keypairsFromSignersRecord(signers: object): Keypair[] {
-    const rec = signers as Record<string, Keypair | undefined>;
-    const out: Keypair[] = [];
-    for (const k of Object.keys(rec)) {
-      const kp = rec[k];
-      if (kp) out.push(kp);
-    }
-    return out;
-  }
-
-  private async buildDelegateInstructions(
-    user: PublicKey,
-    gridId: number,
-    delegations: DelegateAccount[],
-    buffers: Keypair[],
-  ): Promise<TransactionInstruction[]> {
-    if (delegations.length !== buffers.length) {
-      throw new Error("delegate buffers must match delegations");
-    }
-
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const instructions: TransactionInstruction[] = [];
-    for (
-      let offset = 0;
-      offset < delegations.length;
-      offset += MAX_DELEGATIONS_PER_PORTAL_DELEGATE_IX
-    ) {
-      const keys = [
-        { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: sessionPDA, isSigner: false, isWritable: false },
-      ];
-      const chunk = delegations.slice(
-        offset,
-        offset + MAX_DELEGATIONS_PER_PORTAL_DELEGATE_IX,
-      );
-      for (let i = 0; i < chunk.length; i++) {
-        const delegationIndex = offset + i;
-        const delegation = chunk[i];
-        const delegatedAccount = delegation.delegatedAccountSigner.publicKey;
-        const delegationRecordPDA =
-          await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-        keys.push(
-          { pubkey: delegatedAccount, isSigner: true, isWritable: true },
-          { pubkey: delegation.ownerProgramId, isSigner: false, isWritable: false },
-          { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
-          {
-            pubkey: buffers[delegationIndex].publicKey,
-            isSigner: false,
-            isWritable: false,
-          },
-        );
-      }
-
-      instructions.push(
-        new TransactionInstruction({
-          programId: this.portalProgramId,
-          keys,
-          data: Buffer.from(this.portal.encodeDelegate({ gridId })),
-        }),
-      );
-    }
-    return instructions;
-  }
-
-  /**
-   * Local signers partial-sign first, then signTransaction (wallet), then on-chain confirmation.
-   */
-  private async sendTxV1(
-    payerKey: PublicKey,
-    instructions: TransactionInstruction[],
-    signTransaction: WalletSignTransaction,
-    localSigners: Keypair[],
-    options: TransactionOptions,
+  private async sendTx(
+    payer: PublicKey, instructions: TransactionInstruction[], wallet: WalletSignTransaction,
+    signers: Keypair[], options: TransactionOptions,
   ): Promise<TransactionResult> {
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-    const messageV0 = new TransactionMessage({
-      payerKey,
-      recentBlockhash: latestBlockhash.blockhash,
-      instructions,
-    }).compileToV0Message();
-    let tx = new VersionedTransaction(messageV0);
-    tx = signVersionedTransaction(tx, this.dedupeSigners(localSigners));
-    tx = await signTransaction(tx);
-    const signature = getVersionedTxSignatureBase58(tx);
-    console.log(`sending tx with signature: ${signature}`);
-    return this.sendAndConfirmTransactionWithoutWebsocket(tx, options);
-  }
-
-  async buildOpenSession(
-    signer: Keypair,
-    gridId: number,
-    ttlSlots: number = 2000,
-    feeCap: number = 1_000_000,
-    openSessionConfig: OpenSessionConfig = {},
-  ): Promise<{
-    instructions: TransactionInstruction[];
-    feePayer: PublicKey;
-    blockhash: string;
-    lastValidBlockHeight: bigint;
-  }> {
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: sessionPDA, isSigner: false, isWritable: true },
-        { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(
-        this.portal.encodeOpenSession({
-          gridId,
-          ttlSlots: BigInt(ttlSlots),
-          feeCap: BigInt(feeCap),
-          validator: openSessionConfig.validator ?? signer.publicKey,
-          settlementIntervalSlots: BigInt(
-            openSessionConfig.settlementIntervalSlots ?? 10,
-          ),
-        }),
-      ),
-    });
-
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-
-    return {
-      instructions: [ix],
-      feePayer: signer.publicKey,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
-    };
-  }
-
-  async buildDelegate(
-    signer: Keypair,
-    gridId: number,
-    delegations: DelegateAccount[],
-  ): Promise<{
-    instructions: TransactionInstruction[];
-    feePayer: PublicKey;
-    blockhash: string;
-    lastValidBlockHeight: bigint;
-    buffers: Keypair[];
-  }> {
-    if (delegations.length === 0) {
-      throw new Error("delegate requires at least one delegation");
-    }
-
-    const bufferRent = await this.rpc.getMinimumBalanceForRentExemption(0);
-    const buffers = delegations.map(() => Keypair.generate());
-    const createBufferIxs = delegations.map((delegation, index) =>
-      SystemProgram.createAccount({
-        fromPubkey: signer.publicKey,
-        newAccountPubkey: buffers[index].publicKey,
-        lamports: bufferRent,
-        space: 0,
-        programId: delegation.ownerProgramId,
-      }),
-    );
-
-    const delegateIxs = await this.buildDelegateInstructions(
-      signer.publicKey,
-      gridId,
-      delegations,
-      buffers,
-    );
-
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-
-    return {
-      instructions: [...createBufferIxs, ...delegateIxs],
-      feePayer: signer.publicKey,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
-      buffers,
-    };
-  }
-
-  async buildDepositFee(
-    signer: Keypair,
-    lamports: number,
-    recipient: PublicKey = signer.publicKey,
-  ): Promise<{
-    instructions: TransactionInstruction[];
-    feePayer: PublicKey;
-    blockhash: string;
-    lastValidBlockHeight: bigint;
-  }> {
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const depositReceiptPDA = await this.portal.deriveDepositReceiptPDA(
-      sessionPDA,
-      recipient,
-    );
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: sessionPDA, isSigner: false, isWritable: false },
-        { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
-        { pubkey: recipient, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(
-        this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
-      ),
-    });
-
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-
-    return {
-      instructions: [ix],
-      feePayer: signer.publicKey,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
-    };
-  }
-
-  async buildErSolWithdrawalInstructions({
-    erSource,
-    l1Recipient,
-    lamports,
-  }: ErSolWithdrawalParams): Promise<TransactionInstruction[]> {
-    return [
-      new TransactionInstruction({
-        programId: this.portalProgramId,
-        keys: [
-          { pubkey: erSource, isSigner: true, isWritable: true },
-          { pubkey: l1Recipient, isSigner: false, isWritable: false },
-          { pubkey: WITHDRAWAL_SINK, isSigner: false, isWritable: true },
-          { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-          { pubkey: SYSVAR_CLOCK_PUBKEY, isSigner: false, isWritable: false },
-        ],
-        data: Buffer.from(
-          this.portal.encodeStartWithdrawal({ lamports: BigInt(lamports) }),
-        ),
-      }),
-    ];
-  }
-
-  async buildErSolWithdrawal(
-    recipient: PublicKey,
-    lamports: number,
-  ): Promise<TransactionInstruction> {
-    const [transferIx] = await this.buildErSolWithdrawalInstructions({
-      erSource: recipient,
-      l1Recipient: recipient,
-      lamports,
-    });
-    return transferIx;
-  }
-
-  async buildRequestUndelegation(
-    signer: Keypair,
-    delegatedAccount: PublicKey,
-    ownerProgramId: PublicKey,
-  ): Promise<{
-    instructions: TransactionInstruction[];
-    feePayer: PublicKey;
-    blockhash: string;
-    lastValidBlockHeight: bigint;
-  }> {
-    const delegationRecordPDA =
-      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const requestPDA =
-      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: signer.publicKey, isSigner: true, isWritable: false },
-        { pubkey: delegatedAccount, isSigner: true, isWritable: false },
-        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: false },
-        { pubkey: sessionPDA, isSigner: false, isWritable: false },
-        { pubkey: requestPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(this.portal.encodeRequestUndelegation()),
-    });
-
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-
-    return {
-      instructions: [ix],
-      feePayer: signer.publicKey,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
-    };
-  }
-
-  async buildUndelegate(
-    signer: Keypair,
-    delegatedAccount: PublicKey,
-    ownerProgramId: PublicKey,
-  ): Promise<{
-    instructions: TransactionInstruction[];
-    feePayer: PublicKey;
-    blockhash: string;
-    lastValidBlockHeight: bigint;
-  }> {
-    const delegationRecordPDA =
-      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const requestPDA =
-      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
-        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: sessionPDA, isSigner: false, isWritable: false },
-        { pubkey: requestPDA, isSigner: false, isWritable: true },
-      ],
-      data: Buffer.from(this.portal.encodeUndelegate()),
-    });
-
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-
-    return {
-      instructions: [ix],
-      feePayer: signer.publicKey,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
-    };
-  }
-
-  async buildCloseSession(
-    signer: Keypair,
-  ): Promise<{
-    instructions: TransactionInstruction[];
-    feePayer: PublicKey;
-    blockhash: string;
-    lastValidBlockHeight: bigint;
-  }> {
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
-    const checkpointCursorPDA =
-      await this.portal.deriveCheckpointCursorPDA(sessionPDA);
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: signer.publicKey, isSigner: true, isWritable: true },
-        { pubkey: sessionPDA, isSigner: false, isWritable: true },
-        { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: checkpointCursorPDA, isSigner: false, isWritable: true },
-      ],
-      data: Buffer.from(this.portal.encodeCloseSession()),
-    });
-
-    const latestBlockhash = await this.rpc.getLatestBlockhash();
-
-    return {
-      instructions: [ix],
-      feePayer: signer.publicKey,
-      blockhash: latestBlockhash.blockhash,
-      lastValidBlockHeight: BigInt(latestBlockhash.lastValidBlockHeight),
-    };
+    const latest = await this.rpc.getLatestBlockhash();
+    const message = new TransactionMessage({ payerKey: payer, recentBlockhash: latest.blockhash, instructions }).compileToV0Message();
+    const unique = [...new Map(signers.map(signer => [signer.publicKey.toBase58(), signer])).values()];
+    const partial = signVersionedTransaction(new VersionedTransaction(message), unique);
+    return this.sendAndConfirmTransactionWithoutWebsocket(await wallet(partial), options);
   }
 
   async openSession(
-    user: PublicKey,
-    gridId: number,
-    ttlSlots: number = 2000,
-    feeCap: number = 1_000_000,
-    signTransaction: WalletSignTransaction,
-    signers: SessionV1Signers,
-    options: TransactionOptions = {},
-    openSessionConfig: OpenSessionConfig = {},
+    user: PublicKey, grid: number | bigint, ttlSlots: number | bigint = 2000, feeCap: number | bigint = 1_000_000,
+    wallet: WalletSignTransaction, signers: SessionSigners, options: TransactionOptions = {}, openOptions: OpenSessionConfig = {},
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: sessionPDA, isSigner: false, isWritable: true },
-        { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(
-        this.portal.encodeOpenSession({
-          gridId,
-          ttlSlots: BigInt(ttlSlots),
-          feeCap: BigInt(feeCap),
-          validator: openSessionConfig.validator ?? user,
-          settlementIntervalSlots: BigInt(
-            openSessionConfig.settlementIntervalSlots ?? 10,
-          ),
-        }),
-      ),
-    });
-
-    const feePayer = signers.feePayerSigner?.publicKey ?? user;
-
-    const localSigners = this.keypairsFromSignersRecord(signers);
-
-    const { signature } = await this.sendTxV1(
-      feePayer,
-      [ix],
-      signTransaction,
-      localSigners,
-      options,
-    );
-
-    console.log(`✓ Session opened, sessionPDA: ${sessionPDA.toBase58()}`);
-    console.log(`  Signature: ${signature}`);
-
-    return { signature };
-  }
-
-  async delegate(
-    user: PublicKey,
-    gridId: number,
-    signTransaction: WalletSignTransaction,
-    signers: DelegateV1Signers,
-    options: TransactionOptions = {},
-  ): Promise<TransactionResult> {
-    if (signers.delegations.length === 0) {
-      throw new Error("delegate requires at least one delegation");
-    }
-
-    const bufferRent = await this.rpc.getMinimumBalanceForRentExemption(0);
-    const buffers = signers.delegations.map(() => Keypair.generate());
-    const createBufferIxs = signers.delegations.map((delegation, index) =>
-      SystemProgram.createAccount({
-        fromPubkey: user,
-        newAccountPubkey: buffers[index].publicKey,
-        lamports: bufferRent,
-        space: 0,
-        programId: delegation.ownerProgramId,
-      }),
-    );
-
-    const delegateIxs = await this.buildDelegateInstructions(
-      user,
-      gridId,
-      signers.delegations,
-      buffers,
-    );
-
-    const feePayer = signers.feePayerSigner?.publicKey ?? user;
-
-    const localSigners = [
-      signers.feePayerSigner,
-      ...signers.delegations.map((delegation) => delegation.delegatedAccountSigner),
-      ...buffers,
-    ].filter((signer): signer is Keypair => signer !== undefined);
-
-    const { signature } = await this.sendTxV1(
-      feePayer,
-      [...createBufferIxs, ...delegateIxs],
-      signTransaction,
-      localSigners,
-      options,
-    );
-
-    console.log(`✓ Delegated ${signers.delegations.length} account(s)`);
-    console.log(`  Signature: ${signature}`);
-
-    return { signature };
+    const instruction = await this.openInstruction(user, grid, ttlSlots, feeCap, openOptions);
+    return this.sendTx(signers.feePayerSigner?.publicKey ?? user, [instruction], wallet,
+      signers.feePayerSigner ? [signers.feePayerSigner] : [], options);
   }
 
   async depositFee(
-    user: PublicKey,
-    lamports: number,
-    signTransaction: WalletSignTransaction,
-    signers: DepositFeeV1Signers,
-    options: TransactionOptions = {},
-    recipient: PublicKey = user,
+    user: PublicKey, amount: number | bigint, wallet: WalletSignTransaction,
+    signers: DepositFeeSigners, options: TransactionOptions = {}, recipient = user,
   ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const depositReceiptPDA = await this.portal.deriveDepositReceiptPDA(
-      sessionPDA,
-      recipient,
-    );
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: sessionPDA, isSigner: false, isWritable: false },
-        { pubkey: depositReceiptPDA, isSigner: false, isWritable: true },
-        { pubkey: recipient, isSigner: false, isWritable: false },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(
-        this.portal.encodeDepositFee({ lamports: BigInt(lamports) }),
-      ),
-    });
-
-    const feePayer = signers.feePayerSigner?.publicKey ?? user;
-
-
-    const localSigners = this.keypairsFromSignersRecord(signers);
-
-    const { signature } = await this.sendTxV1(
-      feePayer,
-      [ix],
-      signTransaction,
-      localSigners,
-      options,
-    );
-
-    console.log(`✓ Fee deposited: ${lamports} lamports to ${recipient.toBase58()}`);
-    console.log(`  Signature: ${signature}`);
-
-    return { signature };
+    if (signers.depositorSigner && !signers.depositorSigner.publicKey.equals(user)) throw new Error("Depositor signer differs from the payer");
+    const instruction = await this.depositInstruction(user, amount, recipient);
+    return this.sendTx(signers.feePayerSigner?.publicKey ?? user, [instruction], wallet,
+      [signers.depositorSigner, signers.feePayerSigner].filter((value): value is Keypair => value !== undefined), options);
   }
 
-  async requestUndelegation(
-    user: PublicKey,
-    ownerProgramId: PublicKey,
-    signTransaction: WalletSignTransaction,
-    signers: UndelegateV1Signers,
-    options: TransactionOptions = {},
-  ): Promise<TransactionResult> {
-    const delegatedAccount = signers.delegatedAccountSigner.publicKey;
-    const delegationRecordPDA =
-      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const requestPDA =
-      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: user, isSigner: true, isWritable: false },
-        { pubkey: delegatedAccount, isSigner: true, isWritable: false },
-        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: false },
-        { pubkey: sessionPDA, isSigner: false, isWritable: false },
-        { pubkey: requestPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      ],
-      data: Buffer.from(this.portal.encodeRequestUndelegation()),
-    });
-
-    const feePayer = signers.feePayerSigner?.publicKey ?? user;
-    const localSigners = this.keypairsFromSignersRecord(signers);
-    const { signature } = await this.sendTxV1(
-      feePayer,
-      [ix],
-      signTransaction,
-      localSigners,
-      options,
-    );
-
-    console.log(`✓ Undelegation requested: ${delegatedAccount.toBase58()}`);
-    console.log(`  Signature: ${signature}`);
-    return { signature };
+  async delegate(user: PublicKey, grid: number | bigint, wallet: WalletSignTransaction, signers: DelegateSigners, options: TransactionOptions = {}): Promise<TransactionResult> {
+    const value = await this.walletDelegations(user, grid, signers.delegations);
+    const local = [signers.feePayerSigner, ...value.buffers, ...signers.delegations.map(delegation => delegation.delegatedAccountSigner)]
+      .filter((signer): signer is Keypair => signer !== undefined);
+    return this.sendTx(signers.feePayerSigner?.publicKey ?? user, value.instructions, wallet, local, options);
   }
 
-  async undelegate(
-    user: PublicKey,
-    ownerProgramId: PublicKey,
-    signTransaction: WalletSignTransaction,
-    signers: UndelegateV1Signers,
-    options: TransactionOptions = {},
-  ): Promise<TransactionResult> {
-    const delegatedAccount = signers.delegatedAccountSigner.publicKey;
-    const request = await this.getUndelegationRequest(delegatedAccount);
-    if (request == null) {
-      throw new Error("undelegation must be requested before it can be finalized");
-    }
-    if (!request.approved) {
-      throw new Error("undelegation is waiting for ER settlement");
-    }
+  buildTokenBridgeWithdrawInstruction(...parameters: unknown[]): never { return unavailable("Immediate token withdrawal"); }
+  buildRequestErTokenAccountUndelegationInstruction(...parameters: unknown[]): never { return unavailable("Token undelegation"); }
+  buildUndelegateErTokenAccountInstruction(...parameters: unknown[]): never { return unavailable("Token undelegation"); }
+  async getUndelegationRequest(...parameters: unknown[]): Promise<never> { return unavailable("Undelegation"); }
+  async buildRequestUndelegation(...parameters: unknown[]): Promise<never> { return unavailable("Undelegation"); }
+  async buildUndelegate(...parameters: unknown[]): Promise<never> { return unavailable("Undelegation"); }
+  async buildCloseSession(...parameters: unknown[]): Promise<never> { return unavailable("CloseSession"); }
+  async requestUndelegation(...parameters: unknown[]): Promise<never> { return unavailable("Undelegation"); }
+  async undelegate(...parameters: unknown[]): Promise<never> { return unavailable("Undelegation"); }
+  async closeSession(...parameters: unknown[]): Promise<never> { return unavailable("CloseSession"); }
 
-    const delegationRecordPDA =
-      await this.portal.deriveDelegationRecordPDA(delegatedAccount);
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const requestPDA =
-      await this.portal.deriveUndelegationRequestPDA(delegatedAccount);
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: delegatedAccount, isSigner: true, isWritable: true },
-        { pubkey: ownerProgramId, isSigner: false, isWritable: false },
-        { pubkey: delegationRecordPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: sessionPDA, isSigner: false, isWritable: false },
-        { pubkey: requestPDA, isSigner: false, isWritable: true },
-      ],
-      data: Buffer.from(this.portal.encodeUndelegate()),
-    });
-
-    const feePayer = signers.feePayerSigner?.publicKey ?? user;
-    const localSigners = this.keypairsFromSignersRecord(signers);
-    const { signature } = await this.sendTxV1(
-      feePayer,
-      [ix],
-      signTransaction,
-      localSigners,
-      options,
-    );
-
-    console.log(`✓ Account undelegated: ${delegatedAccount.toBase58()}`);
-    console.log(`  Signature: ${signature}`);
-    return { signature };
-  }
-
-  async closeSession(
-    user: PublicKey,
-    signTransaction: WalletSignTransaction,
-    signers: SessionV1Signers,
-    options: TransactionOptions = {},
-  ): Promise<TransactionResult> {
-    const sessionPDA = await this.portal.deriveSessionPDA();
-    const feeVaultPDA = await this.portal.deriveFeeVaultPDA();
-    const checkpointCursorPDA =
-      await this.portal.deriveCheckpointCursorPDA(sessionPDA);
-
-    const ix = new TransactionInstruction({
-      programId: this.portalProgramId,
-      keys: [
-        { pubkey: user, isSigner: true, isWritable: true },
-        { pubkey: sessionPDA, isSigner: false, isWritable: true },
-        { pubkey: feeVaultPDA, isSigner: false, isWritable: true },
-        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-        { pubkey: checkpointCursorPDA, isSigner: false, isWritable: true },
-      ],
-      data: Buffer.from(this.portal.encodeCloseSession()),
-    });
-
-    const feePayer = signers.feePayerSigner?.publicKey ?? user;
-    if (
-      signers.feePayerSigner &&
-      !signers.feePayerSigner.publicKey.equals(feePayer)
-    ) {
-      throw new Error("signers.feePayerSigner must match fee payer pubkey");
-    }
-
-    const localSigners = this.keypairsFromSignersRecord(signers);
-
-    const { signature } = await this.sendTxV1(
-      feePayer,
-      [ix],
-      signTransaction,
-      localSigners,
-      options,
-    );
-
-    console.log(`✓ Session closed: ${sessionPDA.toBase58()}`);
-    console.log(`  Signature: ${signature}`);
-
-    return { signature };
-  }
-
-  async checkHealth(): Promise<{
-    solana: boolean;
-    ephemeralRollup: boolean;
-  }> {
-    const [ephemeralRollupHealthy] = await Promise.all([
-      this.ephemeralRollupReader.isHealthy(),
-    ]);
-
-    let solanaHealthy = false;
-    try {
-      await this.rpc.getSlot();
-      solanaHealthy = true;
-    } catch {
-      solanaHealthy = false;
-    }
-
-    return {
-      solana: solanaHealthy,
-      ephemeralRollup: ephemeralRollupHealthy,
-    };
+  async checkHealth(): Promise<{ solana: boolean; ephemeralRollup: boolean }> {
+    const ephemeralRollup = await this.ephemeralRollupReader.isHealthy();
+    try { await this.rpc.getSlot(); return { solana: true, ephemeralRollup }; }
+    catch { return { solana: false, ephemeralRollup }; }
   }
 }
 
-export * from "./types";
-export {
-  PortalProgram,
-  type UndelegationRequest,
-  SESSION_DISCRIMINATOR,
-  SESSION_LEN,
-  UNDELEGATION_REQUEST_DISCRIMINATOR,
-  UNDELEGATION_REQUEST_LEN,
-} from "./programs/portal";
-export {
-  Connection,
-  Keypair,
-  PublicKey,
-  TransactionInstruction,
-  VersionedTransaction,
-  SystemProgram,
-} from "@solana/web3.js";
+function uintSequence(value: bigint): Uint8Array {
+  const data = new Uint8Array(8);
+  new DataView(data.buffer).setBigUint64(0, checkedInteger(value, 64, "input sequence"), true);
+  return data;
+}

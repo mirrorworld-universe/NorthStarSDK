@@ -1,5 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
-import { readU64LE, toU64LE } from "../utils/common";
+import { readU64LE } from "../utils/common";
+import { checkedInteger, uintLE } from "./continuity";
 
 export const TOKEN_BRIDGE_PROGRAM_ID = new PublicKey(
   "HeVLVaSa9WnFai9aTRJ3UR2c4jwbMe5nbjagmDP1GbXR",
@@ -35,11 +36,21 @@ function assertAccountDataLength(
   expected: number,
   accountName: string,
 ) {
-  if (data.length < expected) {
+  if (data.length !== expected) {
     throw new Error(
-      `Invalid ${accountName} data length: got ${data.length}, expected >= ${expected}`,
+      `Invalid ${accountName} data length: got ${data.length}, expected ${expected}`,
     );
   }
+}
+
+function positiveAmount(value: number | bigint): bigint {
+  const amount = checkedInteger(value, 64, "token amount");
+  if (amount === 0n) throw new RangeError("Token amount must be positive");
+  return amount;
+}
+
+function checkDecimals(value: number): void {
+  if (!Number.isInteger(value) || value < 0 || value > 255) throw new RangeError("Invalid mint decimals");
 }
 
 function u8(...values: number[]): Uint8Array {
@@ -74,6 +85,10 @@ export class TokenBridgeProgram {
       erTokenAccount,
       this.programId,
     );
+  }
+
+  deriveOriginPDA(erTokenAccount: PublicKey): PublicKey {
+    return TokenBridgeProgram.deriveOriginPDA(erTokenAccount, this.programId);
   }
 
   deriveBufferPDA(erTokenAccount: PublicKey): PublicKey {
@@ -163,6 +178,10 @@ export class TokenBridgeProgram {
     return pda;
   }
 
+  static deriveOriginPDA(erTokenAccount: PublicKey, programId: PublicKey): PublicKey {
+    return PublicKey.findProgramAddressSync([Buffer.from("token_deposit_origin"), erTokenAccount.toBuffer()], programId)[0];
+  }
+
   static deriveBufferPDA(
     erTokenAccount: PublicKey,
     programId: PublicKey = TOKEN_BRIDGE_PROGRAM_ID,
@@ -187,8 +206,9 @@ export class TokenBridgeProgram {
 
   static encodeDeposit(amount: number | bigint, decimals: number): Uint8Array {
     const data = new Uint8Array(1 + 8 + 1);
+    checkDecimals(decimals);
     data[0] = 2;
-    data.set(toU64LE(amount), 1);
+    data.set(uintLE(positiveAmount(amount), 64, "deposit amount"), 1);
     data[9] = decimals;
     return data;
   }
@@ -196,16 +216,13 @@ export class TokenBridgeProgram {
   static encodeTransfer(amount: number | bigint): Uint8Array {
     const data = new Uint8Array(1 + 8);
     data[0] = 3;
-    data.set(toU64LE(amount), 1);
+    data.set(uintLE(positiveAmount(amount), 64, "transfer amount"), 1);
     return data;
   }
 
   static encodeWithdraw(amount: number | bigint, decimals: number): Uint8Array {
-    const data = new Uint8Array(1 + 8 + 1);
-    data[0] = 4;
-    data.set(toU64LE(amount), 1);
-    data[9] = decimals;
-    return data;
+    void amount; void decimals;
+    throw new Error("Immediate token withdrawal has no continuity binding; use StartWithdrawal");
   }
 
   static encodeStartWithdrawal(
@@ -213,8 +230,9 @@ export class TokenBridgeProgram {
     decimals: number,
   ): Uint8Array {
     const data = new Uint8Array(1 + 8 + 1);
+    checkDecimals(decimals);
     data[0] = 7;
-    data.set(toU64LE(amount), 1);
+    data.set(uintLE(positiveAmount(amount), 64, "withdrawal amount"), 1);
     data[9] = decimals;
     return data;
   }
@@ -222,20 +240,21 @@ export class TokenBridgeProgram {
   static encodeDelegateErTokenAccount(gridId: number | bigint): Uint8Array {
     const data = new Uint8Array(1 + 8);
     data[0] = 5;
-    data.set(toU64LE(gridId), 1);
+    data.set(uintLE(gridId, 64, "grid id"), 1);
     return data;
   }
 
   static encodeUndelegateErTokenAccount(): Uint8Array {
-    return u8(6);
+    throw new Error("Token undelegation has no continuity lifecycle binding");
   }
 
   static encodeRequestUndelegation(): Uint8Array {
-    return u8(9);
+    throw new Error("Token undelegation has no continuity lifecycle binding");
   }
 
   static parseTokenVault(data: Uint8Array): TokenVault {
     assertAccountDataLength(data, TOKEN_VAULT_LEN, "TokenVault");
+    if (data[0] !== TOKEN_VAULT_DISCRIMINATOR) throw new Error("Invalid TokenVault discriminator");
     return {
       discriminator: data[0],
       sessionBridge: new PublicKey(data.slice(1, 33)),
@@ -250,6 +269,7 @@ export class TokenBridgeProgram {
 
   static parseErTokenAccount(data: Uint8Array): ErTokenAccount {
     assertAccountDataLength(data, ER_TOKEN_ACCOUNT_LEN, "ErTokenAccount");
+    if (data[0] !== ER_TOKEN_ACCOUNT_DISCRIMINATOR) throw new Error("Invalid ErTokenAccount discriminator");
     return {
       discriminator: data[0],
       sessionBridge: new PublicKey(data.slice(1, 33)),

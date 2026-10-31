@@ -50,6 +50,7 @@ export interface NorthStarSyncStatus {
   isSyncing: boolean;
   latestSyncedSlot: bigint;
   latestL1Slot: bigint;
+  checkpointError?: string | null;
 }
 
 /**
@@ -61,6 +62,7 @@ export interface NorthStarSyncStatusResponse {
     isSyncing: boolean;
     latestSyncedSlot: number | string;
     latestL1Slot: number | string;
+    checkpointError?: string | null;
   };
   id: number;
 }
@@ -75,6 +77,9 @@ export const NORTHSTAR_RPC_ERROR_EPHEMERAL_ROLLUP_NOT_ACTIVE = -34001;
  */
 export interface NorthStarConfig {
   portalProgramId: Address;
+  l1GenesisHash: string;
+  checkpointProfile: Uint8Array;
+  tokenBridgeProgramId: Address;
   customEndpoints: {
     solana: string;
     ephemeralRollup: string;

@@ -4,6 +4,7 @@
  */
 
 import { PublicKey } from "@solana/web3.js";
+import { checkedInteger } from "../programs/continuity";
 import axios, { AxiosInstance } from "axios";
 import {
   AccountInfo,
@@ -130,11 +131,31 @@ export class EphemeralRollupReader {
     });
 
     const result = response.data.result;
+    if (!result || typeof result.isSyncing !== "boolean" ||
+      (result.checkpointError != null && typeof result.checkpointError !== "string")) {
+      throw new Error("Malformed Northstar sync status");
+    }
+    const slot = (value: number | string): bigint => {
+      if (typeof value === "string") {
+        if (!/^(0|[1-9][0-9]{0,19})$/.test(value)) throw new Error("Malformed sync slot");
+        return checkedInteger(BigInt(value), 64, "sync slot");
+      }
+      return checkedInteger(value, 64, "sync slot");
+    };
     return {
       isSyncing: result.isSyncing,
-      latestSyncedSlot: BigInt(result.latestSyncedSlot),
-      latestL1Slot: BigInt(result.latestL1Slot),
+      latestSyncedSlot: slot(result.latestSyncedSlot),
+      latestL1Slot: slot(result.latestL1Slot),
+      checkpointError: result.checkpointError,
     };
+  }
+
+  async getSessionPda(): Promise<PublicKey | null> {
+    const response = await this.client.post("", { jsonrpc: "2.0", id: 1, method: "getSessionPda" });
+    const result = response.data.result;
+    if (result === null) return null;
+    if (typeof result !== "string") throw new Error("Malformed ER session binding");
+    return new PublicKey(result);
   }
 
   /**

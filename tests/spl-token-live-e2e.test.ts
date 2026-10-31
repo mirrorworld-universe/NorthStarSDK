@@ -18,10 +18,10 @@ import {
 } from "@solana/spl-token";
 import bs58 from "bs58";
 import { config } from "dotenv";
+import { assertDevelopmentDeployment } from "./live-config";
 import {
   NorthStarSDK,
   signVersionedTransaction,
-  TOKEN_BRIDGE_PROGRAM_ID,
 } from "../src";
 
 config();
@@ -30,8 +30,20 @@ const VALIDATOR_RPC = process.env.VALIDATOR_RPC ?? "http://localhost:8899";
 const EPHEMERAL_ROLLUP_RPC =
   process.env.EPHEMERAL_ROLLUP_RPC ?? "http://localhost:8910";
 const PORTAL_PROGRAM_ID = new PublicKey(process.env.PORTAL_PROGRAM_ID!.trim());
+function required(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required for the continuity deployment`);
+  return value;
+}
+const TOKEN_BRIDGE_PROGRAM_ID = new PublicKey(required("TOKEN_BRIDGE_PROGRAM_ID"));
+const L1_GENESIS_HASH = required("L1_GENESIS_HASH");
+assertDevelopmentDeployment(L1_GENESIS_HASH, VALIDATOR_RPC);
+const PROFILE_HEX = required("CHECKPOINT_PROFILE");
+if (!/^[0-9a-fA-F]{64}$/.test(PROFILE_HEX)) throw new Error("CHECKPOINT_PROFILE must be 64 hex digits");
+const CHECKPOINT_PROFILE = Uint8Array.from(Buffer.from(PROFILE_HEX, "hex"));
+const VALIDATOR_IDENTITY = new PublicKey(required("VALIDATOR_IDENTITY"));
 const DECIMALS = 6;
-const GRID_ID = 1;
+const GRID_ID = BigInt(process.env.NORTHSTAR_GRID_ID ?? "0");
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -59,7 +71,7 @@ async function sendTx(
   payer: PublicKey,
   instructions: any[],
   signers: Keypair[],
-  skipPreflight = true,
+  skipPreflight = false,
 ) {
   const { blockhash } = await connection.getLatestBlockhash("confirmed");
   const tx = new VersionedTransaction(
@@ -95,7 +107,8 @@ async function sendErTx(
   );
   tx.sign(signers);
   return erRpc.sendRawTransaction(Buffer.from(tx.serialize()), {
-    skipPreflight: true,
+    skipPreflight: false,
+    maxRetries: 0,
   });
 }
 
@@ -106,7 +119,7 @@ async function waitForErAmount(
   expected: bigint,
   commitment: "processed" | "confirmed" = "processed",
 ) {
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 120; i++) {
     const info = await connection.getAccountInfo(erTokenAccount, commitment);
     if (info) {
       const state = sdk.tokenBridge.parseErTokenAccount(info.data);
@@ -124,39 +137,40 @@ async function waitForTokenAmount(
   tokenAccount: PublicKey,
   expected: bigint,
 ) {
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 120; i++) {
     const state = await getAccount(
       connection,
       tokenAccount,
-      "confirmed",
+      "finalized",
       TOKEN_PROGRAM_ID,
     );
     if (state.amount === expected) return state;
-    await sleep(500);
+    await sleep(1000);
   }
   throw new Error(
     `Timed out waiting for token account ${tokenAccount.toBase58()} amount ${expected}`,
   );
 }
 
-async function waitForUndelegationApproval(
-  sdk: NorthStarSDK,
-  delegatedAccount: PublicKey,
-) {
-  for (let i = 0; i < 120; i++) {
-    const request = await sdk.getUndelegationRequest(delegatedAccount);
-    if (request?.approved) return request;
+async function waitForExecutionSession(sdk: NorthStarSDK) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const status = await sdk.getEphemeralRollupSyncStatus();
+    if (status.checkpointError != null) throw new Error(`ER checkpoint error: ${status.checkpointError}`);
+    try { return await sdk.getExecutionSession(); }
+    catch (error) { lastError = error; }
     await sleep(1000);
   }
-  throw new Error(
-    `Timed out waiting for undelegation approval for ${delegatedAccount.toBase58()}`,
-  );
+  throw new Error(`ER session readiness timed out: ${String(lastError)}`);
 }
 
 describe("SPL token bridge live E2E", () => {
   test("mint on L1, deposit to ER, transfer on ER, settle and withdraw on L1", async () => {
     const sdk = new NorthStarSDK({
       portalProgramId: PORTAL_PROGRAM_ID,
+      tokenBridgeProgramId: TOKEN_BRIDGE_PROGRAM_ID,
+      l1GenesisHash: L1_GENESIS_HASH,
+      checkpointProfile: CHECKPOINT_PROFILE,
       customEndpoints: {
         solana: VALIDATOR_RPC,
         ephemeralRollup: EPHEMERAL_ROLLUP_RPC,
@@ -176,58 +190,30 @@ describe("SPL token bridge live E2E", () => {
     const tokenBridgeProgram = await rpc.getAccountInfo(TOKEN_BRIDGE_PROGRAM_ID);
     expect(tokenBridgeProgram?.executable).toBe(true);
 
-    const identity = await (rpc as any)._rpcRequest("getIdentity", []);
-    const validatorIdentity = new PublicKey(identity.result.identity);
     const session = await sdk.portal.deriveSessionPDA();
     const feeVault = await sdk.portal.deriveFeeVaultPDA();
-    const existingSession = await rpc.getAccountInfo(session);
-    if (existingSession) {
-      await sdk.closeSession(
-        alice.publicKey,
-        walletSignLocal(alice),
-        {},
-        { commitment: "confirmed", skipPreflight: true },
-      );
-      await sleep(1000);
+    if (await rpc.getAccountInfo(session)) {
+      const existing = await sdk.getSessionSnapshot();
+      if (!existing.state.authority.equals(alice.publicKey) || !existing.state.validator.equals(VALIDATOR_IDENTITY) || existing.state.gridId !== GRID_ID) {
+        throw new Error("Existing session authority, validator or grid differs from this deployment");
+      }
+    } else {
+      await sdk.openSession(alice.publicKey, GRID_ID, 80_000n, 1_000_000n,
+        walletSignLocal(alice), {}, { commitment: "confirmed", maxAttempts: 60 },
+        { validator: VALIDATOR_IDENTITY, settlementIntervalSlots: 10 });
     }
-
-    await sdk.openSession(
-      alice.publicKey,
-      GRID_ID,
-      2_000,
-      1_000_000,
-      walletSignLocal(alice),
-      {},
-      { commitment: "confirmed", skipPreflight: true, maxAttempts: 60 },
-      { validator: validatorIdentity, settlementIntervalSlots: 10 },
-    );
     expect(await rpc.getAccountInfo(session)).not.toBeNull();
     expect(await rpc.getAccountInfo(feeVault)).not.toBeNull();
     console.log("session", session.toBase58());
 
-    await sendTx(
-      sdk,
-      rpc,
-      alice.publicKey,
-      [
-        SystemProgram.transfer({
-          fromPubkey: alice.publicKey,
-          toPubkey: bob.publicKey,
-          lamports: 100_000_000,
-        }),
-        SystemProgram.transfer({
-          fromPubkey: alice.publicKey,
-          toPubkey: erFeePayer.publicKey,
-          lamports: 100_000_000,
-        }),
-      ],
-      [alice],
-    );
+    await sdk.depositFee(alice.publicKey, 100_000_000n, walletSignLocal(alice), {},
+      { commitment: "confirmed", maxAttempts: 60 }, erFeePayer.publicKey);
 
     const mint = Keypair.generate();
     const mintRent = await rpc.getMinimumBalanceForRentExemption(MINT_SIZE);
+    const initialSnapshot = await sdk.getSessionSnapshot();
     const sessionBridge = await sdk.portal.deriveSessionBridgePDA(
-      session,
+      initialSnapshot.context,
       mint.publicKey,
     );
     const vault = sdk.tokenBridge.deriveVaultPDA(sessionBridge);
@@ -349,27 +335,8 @@ describe("SPL token bridge live E2E", () => {
       [alice],
     );
 
-    // Ownership transfer and Portal delegation must land atomically.
-    // Otherwise the record-creation slot does not expose the delegated account to the ER.
-    const feePayerDelegation = await sdk.buildDelegate(alice, GRID_ID, [
-      {
-        delegatedAccountSigner: erFeePayer,
-        ownerProgramId: SystemProgram.programId,
-      },
-    ]);
-    await sendTx(
-      sdk,
-      rpc,
-      alice.publicKey,
-      [
-        SystemProgram.assign({
-          accountPubkey: erFeePayer.publicKey,
-          programId: PORTAL_PROGRAM_ID,
-        }),
-        ...feePayerDelegation.instructions,
-      ],
-      [alice, erFeePayer, ...feePayerDelegation.buffers],
-    );
+    await waitForExecutionSession(sdk);
+    const delegationSnapshot = await sdk.getSessionSnapshot();
 
     await sendTx(
       sdk,
@@ -377,20 +344,14 @@ describe("SPL token bridge live E2E", () => {
       alice.publicKey,
       [
         sdk.buildDelegateErTokenAccountInstruction({
-          payer: alice.publicKey,
-          owner: alice.publicKey,
-          erTokenAccount: aliceEr,
-          sessionBridge,
-          session,
-          gridId: GRID_ID,
+          payer: alice.publicKey, owner: alice.publicKey, erTokenAccount: aliceEr,
+          sessionBridge, session, mint: mint.publicKey, gridId: GRID_ID,
+          sessionContext: delegationSnapshot.context, sequence: delegationSnapshot.nextSequence,
         }),
         sdk.buildDelegateErTokenAccountInstruction({
-          payer: alice.publicKey,
-          owner: bob.publicKey,
-          erTokenAccount: bobEr,
-          sessionBridge,
-          session,
-          gridId: GRID_ID,
+          payer: alice.publicKey, owner: bob.publicKey, erTokenAccount: bobEr,
+          sessionBridge, session, mint: mint.publicKey, gridId: GRID_ID,
+          sessionContext: delegationSnapshot.context, sequence: delegationSnapshot.nextSequence + 1n,
         }),
       ],
       [alice, bob],
@@ -398,6 +359,7 @@ describe("SPL token bridge live E2E", () => {
 
     await waitForErAmount(sdk, erRpc, aliceEr, 0n);
     await waitForErAmount(sdk, erRpc, bobEr, 0n);
+    const depositSnapshot = await sdk.getSessionSnapshot();
 
     await sendTx(
       sdk,
@@ -405,6 +367,7 @@ describe("SPL token bridge live E2E", () => {
       alice.publicKey,
       [
         sdk.buildTokenBridgeDepositInstruction({
+          session, sessionContext: depositSnapshot.context, sequence: depositSnapshot.nextSequence,
           payer: alice.publicKey,
           owner: alice.publicKey,
           vault,
@@ -422,6 +385,7 @@ describe("SPL token bridge live E2E", () => {
     );
     await waitForErAmount(sdk, erRpc, aliceEr, 600_000_000n);
 
+    await waitForExecutionSession(sdk);
     const erTransferSig = await sendErTx(
       erRpc,
       erFeePayer.publicKey,
@@ -438,12 +402,14 @@ describe("SPL token bridge live E2E", () => {
     console.log("ER transfer", erTransferSig);
     await waitForErAmount(sdk, erRpc, aliceEr, 350_000_000n);
     await waitForErAmount(sdk, erRpc, bobEr, 250_000_000n);
+    const executionSnapshot = await waitForExecutionSession(sdk);
 
     await sendErTx(
       erRpc,
       erFeePayer.publicKey,
       [
         sdk.buildTokenBridgeStartWithdrawalInstruction({
+          sessionContext: executionSnapshot.context, mint: mint.publicKey,
           owner: bob.publicKey,
           erTokenAccount: bobEr,
           sessionBridge,
@@ -467,34 +433,8 @@ describe("SPL token bridge live E2E", () => {
     expect(vaultTokenAfter.amount).toBe(400_000_000n);
     await waitForErAmount(sdk, rpc, bobEr, 50_000_000n, "confirmed");
 
-    await sendTx(
-      sdk,
-      rpc,
-      alice.publicKey,
-      [
-        sdk.buildRequestErTokenAccountUndelegationInstruction({
-          payer: alice.publicKey,
-          authority: bob.publicKey,
-          erTokenAccount: bobEr,
-          session,
-        }),
-      ],
-      [alice, bob],
-    );
-    await waitForUndelegationApproval(sdk, bobEr);
-    await sendTx(
-      sdk,
-      rpc,
-      alice.publicKey,
-      [
-        sdk.buildUndelegateErTokenAccountInstruction({
-          authority: bob.publicKey,
-          erTokenAccount: bobEr,
-          session,
-        }),
-      ],
-      [alice, bob],
-    );
+    expect((await rpc.getAccountInfo(bobEr, "confirmed"))?.owner.equals(PORTAL_PROGRAM_ID)).toBe(true);
+    expect(() => sdk.buildRequestErTokenAccountUndelegationInstruction({})).toThrow("no continuity lifecycle binding");
     console.log("Bob L1 token balance", bobTokenAfter.amount.toString());
-  }, 300_000);
+  }, 600_000);
 });

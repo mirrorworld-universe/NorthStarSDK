@@ -1,246 +1,150 @@
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
-import {
-  NorthStarSDK,
-  PortalProgram,
-  TokenBridgeProgram,
-  SESSION_DISCRIMINATOR,
-  SESSION_LEN,
-  UNDELEGATION_REQUEST_DISCRIMINATOR,
-  UNDELEGATION_REQUEST_LEN,
-} from "../src";
+import bs58 from "bs58";
+import { PortalProgram, SESSION_LEN } from "../src";
+import { BRIDGE, GENESIS, PORTAL, PROFILE, SESSION, sdkFixture, sessionFrame, u64 } from "./fixtures/continuity";
 
-function readU64LE(data: Uint8Array, offset: number): bigint {
-  return new DataView(data.buffer, data.byteOffset, data.byteLength).getBigUint64(
-    offset,
-    true,
-  );
-}
+const key = () => Keypair.generate().publicKey;
 
-function writeU64LE(data: Uint8Array, offset: number, value: bigint) {
-  new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(
-    offset,
-    value,
-    true,
-  );
-}
-
-function writeU128LE(data: Uint8Array, offset: number, value: bigint) {
-  writeU64LE(data, offset, value & 0xffff_ffff_ffff_ffffn);
-  writeU64LE(data, offset + 8, value >> 64n);
-}
-
-function sdkWithMockRpc(): NorthStarSDK {
-  const sdk = new NorthStarSDK({
-    portalProgramId: Keypair.generate().publicKey,
-    customEndpoints: {
-      solana: "http://localhost:8899",
-      ephemeralRollup: "http://localhost:8899",
-    },
-  });
-  (sdk as any).rpc = {
-    getLatestBlockhash: async () => ({
-      blockhash: "11111111111111111111111111111111",
-      lastValidBlockHeight: 1,
-    }),
-    getMinimumBalanceForRentExemption: async () => 0,
-  };
-  return sdk;
-}
-
-describe("Portal SDK encoding and account layout", () => {
-  test("encodes OpenSession with validator and settlement interval", () => {
-    const validator = Keypair.generate().publicKey;
-    const data = PortalProgram.encodeOpenSession({
-      gridId: 1n,
-      ttlSlots: 2n,
-      feeCap: 3n,
-      validator,
-      settlementIntervalSlots: 4n,
-    });
-
-    expect(data.length).toBe(65);
-    expect(data[0]).toBe(0);
-    expect(readU64LE(data, 1)).toBe(1n);
-    expect(readU64LE(data, 9)).toBe(2n);
-    expect(readU64LE(data, 17)).toBe(3n);
-    expect(new PublicKey(data.slice(25, 57)).equals(validator)).toBe(true);
-    expect(readU64LE(data, 57)).toBe(4n);
+describe("Portal continuity bindings", () => {
+  test("opens with five accounts and explicit network/profile bytes", async () => {
+    const { sdk, user } = sdkFixture();
+    const validator = key();
+    const plan = await sdk.buildOpenSession(user, 1n, 2n, 3n, { validator, settlementIntervalSlots: 4n });
+    const instruction = plan.instructions[0];
+    expect(instruction.data).toHaveLength(129);
+    expect(instruction.data[0]).toBe(31);
+    expect(instruction.keys).toHaveLength(5);
+    expect(instruction.keys[4]).toEqual({ pubkey: await sdk.portal.deriveSessionEpochPDA(), isSigner: false, isWritable: true });
+    expect(instruction.data.subarray(65, 97)).toEqual(Buffer.from(GENESIS));
+    expect(instruction.data.subarray(97)).toEqual(Buffer.from(PROFILE));
+    expect(new PublicKey(instruction.data.subarray(25, 57)).equals(validator)).toBe(true);
   });
 
-  test("builds the two-phase undelegation flow", async () => {
-    const sdk = sdkWithMockRpc();
-    const user = Keypair.generate();
-    const delegatedAccountSigner = Keypair.generate();
-    const sessionPDA = await sdk.portal.deriveSessionPDA();
-    const requestPDA = await sdk.portal.deriveUndelegationRequestPDA(
-      delegatedAccountSigner.publicKey,
-    );
-
-    const delegate = await sdk.buildDelegate(user, 7, [
-      { delegatedAccountSigner, ownerProgramId: SystemProgram.programId },
-    ]);
-    const delegateIx = delegate.instructions[delegate.instructions.length - 1];
-    expect(delegateIx.keys[0].pubkey.equals(user.publicKey)).toBe(true);
-    expect(delegateIx.keys[1].pubkey.equals(SystemProgram.programId)).toBe(true);
-    expect(delegateIx.keys[2].pubkey.equals(sessionPDA)).toBe(true);
-    expect(delegateIx.keys[2].isWritable).toBe(false);
-    expect(delegateIx.keys[3].pubkey.equals(delegatedAccountSigner.publicKey)).toBe(
-      true,
-    );
-
-    const request = await sdk.buildRequestUndelegation(
-      user,
-      delegatedAccountSigner.publicKey,
-      SystemProgram.programId,
-    );
-    expect(request.instructions[0].data[0]).toBe(28);
-    expect(request.instructions[0].keys).toHaveLength(8);
-    expect(request.instructions[0].keys[6].pubkey.equals(requestPDA)).toBe(true);
-
-    const undelegate = await sdk.buildUndelegate(
-      user,
-      delegatedAccountSigner.publicKey,
-      SystemProgram.programId,
-    );
-    expect(undelegate.instructions[0].keys).toHaveLength(7);
-    expect(undelegate.instructions[0].keys[5].pubkey.equals(sessionPDA)).toBe(true);
-    expect(undelegate.instructions[0].keys[6].pubkey.equals(requestPDA)).toBe(true);
-    expect(undelegate.instructions[0].keys[1].isSigner).toBe(true);
-    expect(undelegate.instructions[0].keys[6].isWritable).toBe(true);
+  test("rejects the wrong L1 network before wallet signing or blockhash planning", async () => {
+    const { sdk, user, rpc } = sdkFixture();
+    rpc.getGenesisHash.mockResolvedValue(bs58.encode(new Uint8Array(32).fill(8)));
+    const wallet = jest.fn(async transaction => transaction);
+    await expect(sdk.openSession(user.publicKey, 1, 2000, 1000, wallet, {})).rejects.toThrow("genesis");
+    expect(wallet).not.toHaveBeenCalled();
+    expect(rpc.getLatestBlockhash).not.toHaveBeenCalled();
   });
 
-  test("builds DepositFee with readonly session", async () => {
-    const sdk = sdkWithMockRpc();
-    const user = Keypair.generate();
-    const deposit = await sdk.buildDepositFee(user, 500);
-
-    expect(deposit.instructions[0].keys[1].isWritable).toBe(false);
+  test("deposits through the mutable session and nonce-derived receipt/inbox", async () => {
+    const { sdk, user, frame } = sdkFixture();
+    const snapshot = await sdk.getSessionSnapshot();
+    const first = (await sdk.buildDepositFee(user, 500n)).instructions[0];
+    expect(first.data[0]).toBe(33);
+    expect(first.keys).toHaveLength(6);
+    expect(first.keys[1]).toEqual({ pubkey: SESSION, isSigner: false, isWritable: true });
+    expect(first.keys[2].pubkey.equals(await sdk.portal.deriveDepositReceiptPDA(snapshot.context, user.publicKey))).toBe(true);
+    expect(first.keys[5].pubkey.equals(await sdk.portal.deriveIngressRecordPDA(snapshot.context, 3n))).toBe(true);
+    u64(frame, 48, 8n);
+    const second = (await sdk.buildDepositFee(user, 500n)).instructions[0];
+    expect(second.keys[2].pubkey.equals(first.keys[2].pubkey)).toBe(false);
+    expect(second.keys[5].pubkey.equals(first.keys[5].pubkey)).toBe(false);
   });
 
-  test("builds CloseSession with checkpoint cursor", async () => {
-    const sdk = sdkWithMockRpc();
-    const authority = Keypair.generate();
-    const sessionPDA = await sdk.portal.deriveSessionPDA();
-    const checkpointCursorPDA =
-      await sdk.portal.deriveCheckpointCursorPDA(sessionPDA);
-    const close = await sdk.buildCloseSession(authority);
-
-    expect(close.instructions[0].keys).toHaveLength(5);
-    expect(close.instructions[0].keys[4].pubkey.equals(checkpointCursorPDA)).toBe(
-      true,
-    );
-    expect(close.instructions[0].keys[4].isWritable).toBe(true);
-  });
-
-  test("encodes RegisterSessionBridge with current Portal tag", () => {
-    const data = PortalProgram.encodeRegisterSessionBridge({
-      mint: Keypair.generate().publicKey,
-      bridgeProgram: Keypair.generate().publicKey,
-      vault: Keypair.generate().publicKey,
-      tokenProgram: Keypair.generate().publicKey,
-    });
-
-    expect(data).toHaveLength(129);
-    expect(data[0]).toBe(22);
-  });
-
-  test("builds permissionless RegisterSessionBridge with validation accounts", async () => {
-    const sdk = sdkWithMockRpc();
-    const payer = Keypair.generate().publicKey;
-    const session = await sdk.portal.deriveSessionPDA();
-    const mint = Keypair.generate().publicKey;
-    const bridgeProgram = Keypair.generate().publicKey;
-    const tokenProgram = Keypair.generate().publicKey;
-    const sessionBridge = await sdk.portal.deriveSessionBridgePDA(session, mint);
-    const vault = TokenBridgeProgram.deriveVaultPDA(sessionBridge, bridgeProgram);
-
-    const instruction = await sdk.buildRegisterSessionBridgeInstruction({
-      payer,
-      session,
-      mint,
-      bridgeProgram,
-      tokenProgram,
-    });
-
+  test("bridge registration requires the session authority and configured bridge", async () => {
+    const { sdk, user } = sdkFixture();
+    const mint = key();
+    const tokenProgram = key();
+    const snapshot = await sdk.getSessionSnapshot();
+    const registry = await sdk.portal.deriveSessionBridgePDA(snapshot.context, mint);
+    const instruction = await sdk.buildRegisterSessionBridgeInstruction({ payer: user.publicKey, session: SESSION, mint, tokenProgram });
+    expect(instruction.data[0]).toBe(36);
     expect(instruction.keys).toHaveLength(7);
-    expect(instruction.keys[0]).toMatchObject({
-      pubkey: payer,
-      isSigner: true,
-      isWritable: true,
+    expect(instruction.keys[2].pubkey.equals(registry)).toBe(true);
+    expect(instruction.keys[4].pubkey.equals(BRIDGE)).toBe(true);
+    expect(new PublicKey(instruction.data.subarray(65, 97)).equals(sdk.tokenBridge.deriveVaultPDA(registry))).toBe(true);
+    await expect(sdk.buildRegisterSessionBridgeInstruction({ payer: key(), session: SESSION, mint, tokenProgram })).rejects.toThrow("authority");
+    await expect(sdk.buildRegisterSessionBridgeInstruction({ payer: user.publicKey, session: SESSION, mint, tokenProgram, bridgeProgram: key() })).rejects.toThrow("bridge program");
+  });
+
+  test("parses all embedded settlement fields without accepting a legacy frame", () => {
+    const data = sessionFrame((1n << 100n) + 55n);
+    u64(data, 16, 11n);
+    u64(data, 128, 66n);
+    data[152] = 1;
+    data.fill(0xaa, 161, 193);
+    data.fill(0xbb, 193, 225);
+    const state = PortalProgram.parseSession(data);
+    expect(state.gridId).toBe(11n);
+    expect(state.nonce).toBe((1n << 100n) + 55n);
+    expect(state.settlementIntervalSlots).toBe(66n);
+    expect(state.settlementStatus).toBe(1);
+    expect(state.settlementChecksum[0]).toBe(0xaa);
+    expect(state.settlementAccumulator[0]).toBe(0xbb);
+    expect(() => PortalProgram.parseSession(data.subarray(8, 234))).toThrow();
+    expect(() => PortalProgram.parseSession(new Uint8Array(SESSION_LEN))).toThrow("discriminator");
+  });
+
+  test.each([
+    ["nonce", (frame: Buffer) => frame.fill(0, 48, 64)],
+    ["profile", (frame: Buffer) => frame.fill(9, 266, 298)],
+    ["input prefix", (frame: Buffer) => u64(frame, 338, 3n)],
+    ["bump", (frame: Buffer) => { frame[233] ^= 1; }],
+  ] as const)("rejects changed session %s before building a deposit", async (_name, change) => {
+    const { sdk, user, frame, rpc } = sdkFixture();
+    change(frame);
+    await expect(sdk.buildDepositFee(user, 1n)).rejects.toThrow();
+    expect(rpc.getLatestBlockhash).not.toHaveBeenCalled();
+  });
+
+  test("rejects wrong ownership and expired context", async () => {
+    const { sdk, user, rpc } = sdkFixture();
+    rpc.getAccountInfoAndContext.mockResolvedValue({
+      context: { slot: 20 }, value: {
+        owner: SystemProgram.programId, executable: false, lamports: 1_000_000, data: sessionFrame(), rentEpoch: 0,
+      }
     });
-    expect(instruction.keys[1].pubkey.equals(session)).toBe(true);
-    expect(instruction.keys[2].pubkey.equals(sessionBridge)).toBe(true);
-    expect(instruction.keys[3].pubkey.equals(mint)).toBe(true);
-    expect(instruction.keys[4].pubkey.equals(bridgeProgram)).toBe(true);
-    expect(instruction.keys[5].pubkey.equals(tokenProgram)).toBe(true);
-    expect(instruction.keys[6].pubkey.equals(SystemProgram.programId)).toBe(true);
-    expect(
-      new PublicKey(instruction.data.slice(65, 97)).equals(vault),
-    ).toBe(true);
+    await expect(sdk.buildDepositFee(user, 1n)).rejects.toThrow("owner");
+    rpc.getAccountInfoAndContext.mockResolvedValue({
+      context: { slot: 2011 }, value: {
+        owner: PORTAL, executable: false, lamports: 1_000_000, data: sessionFrame(), rentEpoch: 0,
+      }
+    });
+    await expect(sdk.buildDepositFee(user, 1n)).rejects.toThrow("expired");
   });
 
-  test("parses Anchor-compatible Session layout", () => {
-    const authority = Keypair.generate().publicKey;
-    const validator = Keypair.generate().publicKey;
-    const data = new Uint8Array(SESSION_LEN);
-    data.set(SESSION_DISCRIMINATOR);
-    writeU64LE(data, 8, 11n);
-    writeU64LE(data, 16, 22n);
-    writeU64LE(data, 24, 33n);
-    writeU64LE(data, 32, 44n);
-    writeU128LE(data, 40, 55n);
-    data.set(authority.toBytes(), 56);
-    data.set(validator.toBytes(), 88);
-    writeU64LE(data, 120, 66n);
-    writeU64LE(data, 128, 77n);
-    writeU64LE(data, 136, 88n);
-    data[144] = 1;
-    writeU64LE(data, 145, 99n);
-    data.fill(0xaa, 153, 185);
-    data.fill(0xbb, 185, 217);
-    writeU64LE(data, 217, 111n);
-    data[225] = 9;
-
-    const session = PortalProgram.parseSession(data);
-    expect(session.gridId).toBe(11n);
-    expect(session.authority.equals(authority)).toBe(true);
-    expect(session.validator.equals(validator)).toBe(true);
-    expect(session.settlementIntervalSlots).toBe(66n);
-    expect(session.settlementStatus).toBe(1);
-    expect(session.settlementChecksum[0]).toBe(0xaa);
-    expect(session.settlementAccumulator[0]).toBe(0xbb);
-    expect(session.bump).toBe(9);
+  test("parses framed cumulative receipts with exact totals", () => {
+    const data = new Uint8Array(137);
+    data.set(Buffer.from("NSRECP02"));
+    const base = data.subarray(8, 97);
+    base.set([64, 175, 24, 183, 138, 109, 70, 78]);
+    base.set(SESSION.toBytes(), 8);
+    base.set(key().toBytes(), 40);
+    u64(base, 72, 10n);
+    u64(base, 80, 3n);
+    data.set(new Uint8Array(32).fill(7), 97);
+    u64(data, 129, 13n);
+    expect(PortalProgram.parseDepositReceipt(data)).toMatchObject({ balance: 10n, withdrawn: 3n, totalDeposited: 13n });
+    u64(data, 129, 12n);
+    expect(() => PortalProgram.parseDepositReceipt(data)).toThrow("totals");
   });
 
-  test("parses an undelegation request", () => {
-    const session = Keypair.generate().publicKey;
-    const delegatedAccount = Keypair.generate().publicKey;
-    const ownerProgram = Keypair.generate().publicKey;
-    const authority = Keypair.generate().publicKey;
-    const data = new Uint8Array(UNDELEGATION_REQUEST_LEN);
-    data.set(UNDELEGATION_REQUEST_DISCRIMINATOR);
-    data.set(session.toBytes(), 8);
-    data.set(delegatedAccount.toBytes(), 40);
-    data.set(ownerProgram.toBytes(), 72);
-    data.set(authority.toBytes(), 104);
-    writeU64LE(data, 136, 123n);
-    data[144] = 1;
-    data[145] = 254;
-
-    const request = PortalProgram.parseUndelegationRequest(data);
-    expect(request.session.equals(session)).toBe(true);
-    expect(request.delegatedAccount.equals(delegatedAccount)).toBe(true);
-    expect(request.ownerProgram.equals(ownerProgram)).toBe(true);
-    expect(request.authority.equals(authority)).toBe(true);
-    expect(request.requestedAtL1Slot).toBe(123n);
-    expect(request.approved).toBe(true);
-    expect(request.bump).toBe(254);
+  test("parses only the framed session registry", () => {
+    const data = new Uint8Array(209);
+    data.set(Buffer.from("NSBRDG02"));
+    const base = data.subarray(8, 177);
+    base.set([145, 47, 8, 254, 118, 119, 114, 215]);
+    const mint = key();
+    base.set(SESSION.toBytes(), 8);
+    base.set(mint.toBytes(), 40);
+    base.set(BRIDGE.toBytes(), 72);
+    base.set(key().toBytes(), 104);
+    base.set(key().toBytes(), 136);
+    data.set(new Uint8Array(32).fill(7), 177);
+    expect(PortalProgram.parseSessionBridge(data).mint.equals(mint)).toBe(true);
+    expect(() => PortalProgram.parseSessionBridge(base)).toThrow();
   });
 
-  test("rejects a Session with the wrong discriminator", () => {
-    const data = new Uint8Array(SESSION_LEN);
-    expect(() => PortalProgram.parseSession(data)).toThrow(
-      "Invalid Session discriminator",
-    );
+  test("unsupported lifecycle commands cannot reach wallet signing", async () => {
+    const { sdk, user, rpc } = sdkFixture();
+    const wallet = jest.fn();
+    await expect(sdk.closeSession(user.publicKey, wallet, {})).rejects.toThrow("no transaction is signed");
+    await expect(sdk.requestUndelegation(user.publicKey, key(), wallet, {})).rejects.toThrow();
+    expect(wallet).not.toHaveBeenCalled();
+    expect(rpc.getLatestBlockhash).not.toHaveBeenCalled();
+    expect(() => PortalProgram.parseUndelegationRequest(new Uint8Array(146))).toThrow("no legacy");
   });
 });

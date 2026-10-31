@@ -28,5 +28,8 @@ jobs:
       - name: Build
         run: yarn build
 
+      - name: Type-check live integration bindings
+        run: yarn typecheck:live
+
       - name: Run tests
         run: yarn test
