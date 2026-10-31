@@ -206,6 +206,9 @@ describe("SPL token bridge live E2E", () => {
     expect(await rpc.getAccountInfo(feeVault)).not.toBeNull();
     console.log("session", session.toBase58());
 
+    // Authenticated token input execution charges its owner, independently of later ER transactions.
+    await sdk.depositFee(alice.publicKey, 100_000_000n, walletSignLocal(alice), {},
+      { commitment: "confirmed", maxAttempts: 60 }, alice.publicKey);
     await sdk.depositFee(alice.publicKey, 100_000_000n, walletSignLocal(alice), {},
       { commitment: "confirmed", maxAttempts: 60 }, erFeePayer.publicKey);
 
