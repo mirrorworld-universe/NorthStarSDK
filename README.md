@@ -1,471 +1,204 @@
-# North Star SDK
+# Northstar SDK
 
-TypeScript/JavaScript SDK for interacting with **Ephemeral Rollup** on Solana and building transactions for the **Portal** on-chain program.
+TypeScript bindings for the unreleased Northstar continuity protocol. This branch
+accepts only the framed session, receipt and bridge accounts used by that protocol.
+It does not fall back to legacy instruction selectors or account layouts.
 
-- **Dependencies**: `@solana/web3.js`, `@dao-xyz/borsh`, `axios`, `bs58`
-- **Entry point**: After build, `dist/index.js`; types in `dist/index.d.ts`
+The native runtime must enable `checkpoint-continuity-v2`. These bindings do not
+establish hosted deployment qualification or new proof acceptance.
 
----
-
-## Installation and build
+## Build and test
 
 ```bash
-npm install
+npm ci
 npm run build
+npm test -- --runInBand
 ```
 
-Example local dependency in another project:
+The default test command excludes funded live tests. Unit tests use deterministic
+RPC fixtures; they are not evidence of a deployed validator lifecycle.
 
-```json
-{
-  "dependencies": {
-    "@sonicsvm/northstar-sdk": "file:../NorthStarSDK"
-  }
-}
-```
+## Explicit deployment identity
 
----
-
-## Quick start
-
-### 1. Configure `NorthStarConfig`
+Obtain all identities from the actual deployment. The SDK provides no production
+checkpoint profile or implicit shared bridge deployment.
 
 ```typescript
 import { NorthStarSDK, PublicKey } from "@sonicsvm/northstar-sdk";
 
-const sdk = new NorthStarSDK({
-  portalProgramId: new PublicKey("YOUR_PORTAL_PROGRAM_ID"),
-  customEndpoints: {
-    solana: "https://api.devnet.solana.com",
-    ephemeralRollup: "https://ephemeral.devnet.sonic.game",
-  },
-});
-```
-
-| Field | Description |
-|------|------|
-| `portalProgramId` | Portal program public key on Solana |
-| `customEndpoints.solana` | Solana L1 JSON-RPC |
-| `customEndpoints.ephemeralRollup` | Ephemeral Rollup JSON-RPC |
-
-After construction, the SDK logs initialization details (RPC endpoints and Portal program address) to the console.
-
-### 2. Wallet signing callback `WalletSignTransaction`
-
-Most on-chain methods follow a **“partial local signing + wallet co-sign”** flow:
-
-1. The SDK builds a `VersionedTransaction` via `Connection.getLatestBlockhash`
-2. Signs locally with `Keypair`s provided in `signers` (e.g. delegated accounts)
-3. Calls your `signTransaction` so the wallet (or a local keypair) completes remaining signatures
-4. Broadcasts and confirms on L1 (HTTP polling, no WebSocket dependency)
-
-Type definition:
-
-```typescript
-type WalletSignTransaction = (
-  transaction: VersionedTransaction,
-) => Promise<VersionedTransaction>;
-```
-
-**Pure local testing** (no browser wallet): simulate the wallet by signing again with the required keypairs, e.g. as in integration tests:
-
-```typescript
-import {
-  NorthStarSDK,
-  signVersionedTransaction,
-  VersionedTransaction,
-  Keypair,
-} from "@sonicsvm/northstar-sdk";
-
-function walletSignLocal(...keypairs: Keypair[]) {
-  return async (tx: VersionedTransaction) =>
-    signVersionedTransaction(tx, keypairs);
+function connect(deployment: {
+  portal: PublicKey;
+  tokenBridge: PublicKey;
+  l1GenesisHash: string;
+  checkpointProfile: Uint8Array;
+  l1Rpc: string;
+  erRpc: string;
+}) {
+  return new NorthStarSDK({
+    portalProgramId: deployment.portal,
+    tokenBridgeProgramId: deployment.tokenBridge,
+    l1GenesisHash: deployment.l1GenesisHash,
+    checkpointProfile: deployment.checkpointProfile,
+    customEndpoints: {
+      solana: deployment.l1Rpc,
+      ephemeralRollup: deployment.erRpc,
+    },
+  });
 }
+```
 
-await sdk.openSession(
+The genesis hash must decode to exactly 32 nonzero bytes. The profile must also be
+32 nonzero bytes. Before preparing L1 actions, the SDK verifies the RPC genesis.
+Session actions additionally validate canonical address, ownership, incarnation,
+profile, TTL and input counters. A stale input sequence fails on-chain; refresh the
+snapshot only after resolving the previous transaction's outcome.
+
+`getSessionSnapshot()` returns the L1 session, decoded state, context commitment
+and next input sequence. `getExecutionSession()` additionally requires a healthy
+ER runtime and the same session incarnation on both endpoints. Checkpoint errors,
+missing session identity and malformed status fail closed.
+
+## Supported L1 actions
+
+- `buildOpenSession` / `openSession` bind the full network/profile identity and
+  persistent session-epoch PDA. Pass the actual native validator in
+  `OpenSessionConfig.validator` when it differs from the signing wallet.
+- `buildDepositFee` / `depositFee` use a mutable session, context-derived receipt
+  and the next authenticated input PDA.
+- `buildDelegate` / `delegate` support at most two wallet accounts per transaction.
+  The SDK stages System Program ownership transfer and reserves one input per
+  account. Program-owned accounts require CPI from their owner program; a wallet
+  signature cannot replace that authorization.
+- `buildRegisterSessionBridgeInstruction` requires the session authority and
+  configured bridge program. Registration is not permissionless.
+
+Amounts accept `bigint` or safe integer numbers. Encoders reject overflow, unsafe
+number precision, nonpositive amounts and out-of-range mint decimals.
+
+Wallet methods first apply local signatures, then call `WalletSignTransaction`.
+They send to L1 and confirm by bounded HTTP polling. Preflight is enabled by
+default. A confirmation timeout is an uncertain outcome, not permission to sign a
+replacement transaction.
+
+```typescript
+import { signVersionedTransaction } from "@sonicsvm/northstar-sdk";
+
+await sdk.depositFee(
   user.publicKey,
-  gridId,
-  2000,
-  1_000_000,
-  walletSignLocal(user),
+  10_000_000n,
+  async transaction => signVersionedTransaction(transaction, [user]),
   {},
 );
 ```
 
-The main entry also exports `signVersionedTransaction`, `getVersionedTxSignatureBase58`, and `toPublicKey` for use with `VersionedTransaction`.
+Builder-only methods return instructions, fee payer, blockhash and last valid
+block height. `buildDelegate` also returns buffer keypairs that must sign.
 
----
+## Token custody and delegation
 
-## Core class: `NorthStarSDK`
-
-### Connections and program
-
-| Method | Description |
-|------|------|
-| `getRpc()` | Solana L1 `Connection` (`commitment` is `confirmed`) |
-| `getEphemeralRpc()` | Ephemeral Rollup `Connection` |
-| `getPortalProgramId()` | Portal program `PublicKey` |
-| `portal` | `PortalProgram` instance (PDA derivation, instruction encoding, account parsing) |
-| `tokenBridge` | `TokenBridgeProgram` instance (SPL bridge PDA derivation, encoding, and parsing) |
-| `accountResolver` | `AccountResolver` — resolves accounts by data source |
-
-### Key utilities
-
-| Method | Description |
-|------|------|
-| `generateKeyPair()` | Generate a new `Keypair` |
-| `createKeyPairFromBase58(privateKeyBase58)` | Import from Base58 secret (32-byte seed or 64-byte secret key) |
-
-### Account reads
-
-| Method | Description |
-|------|------|
-| `getAccountInfo(address, search_source)` | Fetch a single account |
-| `getMultipleAccounts(addresses, search_source)` | Batch fetch |
-
-**`search_source` behavior** (must be explicit; no automatic fallback):
-
-- `"ephemeral"`: reads only via Ephemeral Rollup RPC `getAccountInfo`; throws on failure.
-- `"solana"`: reads only via L1 `Connection.getAccountInfo`; throws if the account does not exist.
-
-Returned type `AccountInfo`:
+Low-level token builders do not sign, send or establish RPC readiness. Use a fresh
+L1 snapshot for input creation and an execution snapshot before ER submission.
+Their explicit context and sequence allow composition without hidden counters.
 
 ```typescript
-interface AccountInfo {
-  address: PublicKey;
-  data: Uint8Array;
-  executable: boolean;
-  lamports: bigint;
-  owner: PublicKey;
-  slot: bigint;
-  source: "ephemeral-rollup" | "solana";
-}
-```
+const snapshot = await sdk.getSessionSnapshot();
+const registry = await sdk.portal.deriveSessionBridgePDA(snapshot.context, mint);
+const erTokenAccount = sdk.tokenBridge.deriveErTokenAccountPDA(registry, owner);
 
-Use with `sdk.portal.parseSession` and similar to decode Portal-related account data (see **PortalProgram** below).
-
-### Health check
-
-| Method | Description |
-|------|------|
-| `checkHealth()` | Returns `{ solana: boolean, ephemeralRollup: boolean }` |
-
-### Sending and confirming transactions
-
-| Method | Description |
-|------|------|
-| `sendAndConfirmTransactionWithoutWebsocket(tx, options?)` | Send a signed `VersionedTransaction`; confirm via HTTP polling |
-| `confirmSignature(signature, options?)` | Wait until the given signature reaches the requested commitment |
-
-**`TransactionOptions`** (optional):
-
-| Field | Description |
-|------|------|
-| `commitment` | `"processed"` \| `"confirmed"` \| `"finalized"` (default `"confirmed"`) |
-| `skipPreflight` | Skip preflight (default `true`) |
-| `maxAttempts` | Max confirmation poll attempts (default `20`) |
-| `intervalMs` | Poll interval in milliseconds (default `1000`) |
-
----
-
-## Portal on-chain actions (send in one step)
-
-These methods build a `VersionedTransaction`, sign locally with keypairs in `signers`, call `signTransaction`, then `sendAndConfirmTransactionWithoutWebsocket`.
-
-### `openSession`
-
-Open a session (creates Session PDA, links FeeVault, etc. — exact behavior depends on the on-chain program).
-
-```typescript
-await sdk.openSession(
-  user,                    // PublicKey: user/payer (user in the instruction)
-  gridId,                  // number
-  ttlSlots,                // optional, default 2000
-  feeCap,                  // optional, default 1_000_000 (lamports; bigint semantics handled at encode time)
-  signTransaction,
-  signers,                 // SessionV1Signers
-  options?,
-  openSessionConfig?,      // { validator?: PublicKey; settlementIntervalSlots?: number }
-);
-```
-
-**`SessionV1Signers`**: `{ feePayerSigner?: Keypair }`  
-If `feePayerSigner` is omitted, the fee payer is `user`. `openSessionConfig.validator` defaults to `user`; `settlementIntervalSlots` defaults to `10`.
-
-### `closeSession`
-
-Close the active global session.
-
-```typescript
-await sdk.closeSession(
-  user,
-  signTransaction,
-  signers,                 // SessionV1Signers
-  options?,
-);
-```
-
-If `feePayerSigner` is passed, its public key must match the fee payer or an error is thrown.
-
-### `depositFee`
-
-Deposit `lamports` into a user's session. Withdrawals use the fixed `NS19999999999999999999999999999999999999999` sink.
-
-```typescript
-await sdk.depositFee(
-  user,                    // depositor (signing account)
-  lamports,                // number
-  signTransaction,
-  signers,                 // DepositFeeV1Signers
-  options?,
-  recipient?,              // optional, defaults to user
-);
-```
-
-**`DepositFeeV1Signers`**: `{ depositorSigner?: Keypair; feePayerSigner?: Keypair }`  
-If omitted, signing is done by the wallet for `user`; locally you can sign with `depositorSigner` / `feePayerSigner` first, then hand off to the wallet.
-
-### `buildErSolWithdrawal`
-
-Build the ER transaction instruction that requests L1 SOL payout at next settlement.
-
-```typescript
-const ix = await sdk.buildErSolWithdrawal(user, lamports);
-// send ix to sdk.getEphemeralConnection(); not L1
-```
-
-Internally this invokes Portal `StartWithdrawal`, which transfers ER SOL to fixed sink and emits withdrawal event for settlement.
-
-### `delegate`
-
-Delegate one or more **Portal-owned accounts** to a grid in one Portal instruction (instruction data includes `gridId`).  
-Each delegation carries its own `ownerProgramId`, the original owner program recorded for undelegation.
-
-```typescript
-await sdk.delegate(
-  user,                    // PublicKey: payer / primary signer
-  gridId,
-  signTransaction,
-  signers,                 // DelegateV1Signers
-  options?,
-);
-```
-
-**`DelegateV1Signers`**:
-
-```typescript
-{
-  delegations: Array<{
-    delegatedAccountSigner: Keypair;  // delegated account — must sign
-    ownerProgramId: PublicKey;
-  }>;
-  feePayerSigner?: Keypair;
-}
-```
-
-### `requestUndelegation` / `undelegate`
-
-Undelegation is a two-phase flow. Request it first, wait for validator approval after ER
-settlement, then finalize it:
-
-```typescript
-await sdk.requestUndelegation(
-  user,
-  ownerProgramId,
-  signTransaction,
-  signers,
-  options?,
-);
-
-while (!(await sdk.getUndelegationRequest(delegatedAccount))?.approved) {
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-}
-
-await sdk.undelegate(
-  user,
-  ownerProgramId,
-  signTransaction,
-  signers,
-  options?,
-);
-```
-
----
-
-## Instruction builders only (no send)
-
-Use when composing custom transactions or showing them in an external wallet:
-
-| Method | Returns |
-|------|------|
-| `buildOpenSession(signer, gridId, ttlSlots?, feeCap?, openSessionConfig?)` | `{ instructions, feePayer, blockhash, lastValidBlockHeight }` |
-| `buildCloseSession(signer)` | same |
-| `buildDepositFee(signer, lamports, recipient?)` | same |
-| `buildDelegate(signer, gridId, delegations)` | same, plus generated `buffers` |
-| `buildRequestUndelegation(signer, delegatedAccount, ownerProgramId)` | same |
-| `buildUndelegate(signer, delegatedAccount, ownerProgramId)` | final approved undelegation |
-
-Here `instructions` is `TransactionInstruction[]`, and `feePayer` is `signer.publicKey`.
-
-### SPL token bridge builders
-
-`buildRegisterSessionBridgeInstruction` is permissionless. `payer` funds the
-Portal discovery account; Portal validates the initialized mint, executable bridge and token
-programs, and canonical bridge vault.
-
-```typescript
-const registerBridge = await sdk.buildRegisterSessionBridgeInstruction({
-  payer: user.publicKey,
-  session,
-  mint,
-  bridgeProgram,
-  tokenProgram,
-});
-```
-
-SPL deposits use the same split: `payer` funds the deposit receipt while `owner` authorizes
-the token transfer.
-
-```typescript
 const deposit = sdk.buildTokenBridgeDepositInstruction({
-  payer: user.publicKey,
-  owner: tokenOwner.publicKey,
-  vault,
+  payer,
+  owner,
+  session: snapshot.address,
+  sessionContext: snapshot.context,
+  sequence: snapshot.nextSequence,
+  sessionBridge: registry,
+  vault: sdk.tokenBridge.deriveVaultPDA(registry),
   erTokenAccount,
-  sessionBridge,
   sourceTokenAccount,
   vaultTokenAccount,
   mint,
   tokenProgram,
-  amount,
-  decimals,
+  amount: 600n,
+  decimals: 6,
 });
 ```
 
-ER token delegation separates rent funding from ownership authorization. Both `payer` and
-`owner` must sign; `payer` must be able to fund System Program account creation.
+`buildInitializeTokenVaultInstruction` and
+`buildInitializeErTokenAccountInstruction` initialize custody metadata.
+`buildDelegateErTokenAccountInstruction` takes the same explicit session context,
+sequence and mint, plus `gridId`. Its 13-account contract includes the origin
+baseline and authenticated input. The bridge signs its account PDA during CPI.
+A program-owned token authority must provide its own signed CPI; `payer` remains a
+separate funded signer.
 
-```typescript
-const delegateBalance = sdk.buildDelegateErTokenAccountInstruction({
-  payer: user.publicKey,
-  owner: tokenOwner.publicKey,
-  erTokenAccount,
-  sessionBridge,
-  session,
-  gridId,
-});
-```
+Deposits use the 17-account custody/input contract. The SDK rejects mismatched
+registry, owner-derived ER account, vault and session bindings. The on-chain
+programs remain responsible for custody and instruction authorization.
 
-For a PDA owner, its program must invoke the token bridge through CPI with `invoke_signed`;
-a normal funded account remains the separate `payer`. SPL token undelegation uses
-`buildRequestErTokenAccountUndelegationInstruction`, waits for the request PDA's `approved`
-field, then uses `buildUndelegateErTokenAccountInstruction`. Direct Portal undelegation
-follows the same request/approval flow and requires the delegated account signature.
+Before the first token deposit, call `depositFee` with the session validator as
+recipient to fund the runtime manager's ER SOL balance. The manager signs
+authenticated token-input executions and pays their fees and cursor rent,
+independently of the user transaction fee payer. L1 SOL alone does not fund it.
+This SOL funding input must precede the token input in session ingress order.
 
----
+## Deferred payouts
 
-## `PortalProgram`
+`buildErSolWithdrawalInstructions` constructs Portal `StartWithdrawal` after
+checking L1/ER identity and runtime health. Submit its instructions to
+`getEphemeralRpc()`, not L1. `buildErSolWithdrawal` uses the same account as source
+and recipient.
 
-Use via `sdk.portal` or `new PortalProgram(programId)` (the SDK binds the configured program ID).
+For SPL, call `getExecutionSession()` and pass its context to
+`buildTokenBridgeStartWithdrawalInstruction`. Include `mint`: the seven-account
+contract checks mint decimals before the ER debit. Settlement pays the destination
+on L1 later. An ER debit alone is not evidence of payout; inspect the finalized L1
+destination balance and settlement status.
 
-### PDA derivation (static or instance)
+`buildTokenBridgeTransferInstruction` constructs an ER token transfer without a
+payout. It does not submit transactions.
 
-| Method | Seeds (conceptual) |
-|------|----------------|
-| `deriveSessionPDA()` | `session` |
-| `deriveFeeVaultPDA()` | `fee_vault` |
-| `deriveCheckpointCursorPDA(session)` | `checkpoint_cursor` + session |
-| `deriveDelegationRecordPDA(delegatedAccount)` | `delegation` + delegatedAccount |
-| `deriveUndelegationRequestPDA(delegatedAccount)` | `undelegation_request` + delegatedAccount |
-| `deriveDepositReceiptPDA(session, recipient)` | `deposit_receipt` + session + recipient |
-| `deriveSessionBridgePDA(session, mint)` | `session_bridge` + session + mint |
-| `withdrawalSink()` | fixed `NS19999999999999999999999999999999999999999` |
+## Unavailable lifecycle operations
 
-### Instruction encoding (Borsh)
+Close-session, undelegation, undelegation-request and immediate token-payout APIs
+currently throw before signing. They are not implemented continuity lifecycle
+bindings. No legacy instruction is emitted as a substitute.
 
-| Method | Description |
-|------|------|
-| `encodeOpenSession({ gridId, ttlSlots, feeCap, validator, settlementIntervalSlots })` | variant 0 |
-| `encodeCloseSession()` | variant 1 |
-| `encodeDepositFee({ lamports })` | variant 2 |
-| `encodeDelegate({ gridId })` | variant 3 |
-| `encodeUndelegate()` | variant 4 |
-| `encodeRequestUndelegation()` | variant 28 |
-| `encodeStartWithdrawal({ lamports })` | variant 13 |
-| `encodeRegisterSessionBridge({ mint, bridgeProgram, vault, tokenProgram })` | variant 22 |
+## Funded live tests
 
-### Account data parsing
+`npm run test:integration` exercises wallet delegation, explicit SOL credit, two
+payouts and a later top-up. `npm run test:spl-token-live` exercises token custody,
+owner-program delegation, ER transfer and deferred SPL payout. Both require a
+running matching native runtime; they do not start or restart a validator.
 
-After `getAccountInfo` returns `data: Uint8Array`:
+Set `PORTAL_PROGRAM_ID`, `TOKEN_BRIDGE_PROGRAM_ID`, `VALIDATOR_IDENTITY`,
+`L1_GENESIS_HASH`, `CHECKPOINT_PROFILE` (64 hex digits), and
+`TRANSFER_SOURCE_PRIVATE_KEY` (base58). Set `VALIDATOR_RPC` and
+`EPHEMERAL_ROLLUP_RPC` for the actual endpoints; `NORTHSTAR_GRID_ID` defaults to 0.
+Existing sessions must match the expected authority, validator, grid and profile.
+They are never closed or reset automatically.
 
-| Method | Description |
-|------|------|
-| `parseSession(data)` | Session state |
-| `parseFeeVault(data)` | FeeVault |
-| `parseDelegationRecord(data)` | DelegationRecord |
-| `parseUndelegationRequest(data)` | UndelegationRequest (`approved`, request metadata) |
-| `parseDepositReceipt(data)` | DepositReceipt (`balance`, `withdrawn`) |
-| `parseSessionBridge(data)` | Session bridge discovery state |
+Funded tests reject mainnet. Other than the exact devnet genesis, they permit only
+loopback L1 endpoints inside `NORTHSTAR_SANDBOX=1`. They use disposable development
+accounts and leave active delegated state; do not use production funding keys.
+A type-checked live test is not a successful live run or restart qualification.
+The [local RPC report](tests/evidence/continuity-local-rpc.json) records SPL custody,
+transfer and payout, retained balances after a same-ledger restart, and two SOL
+payouts after that restart. It does not qualify hosted deployment or proof acceptance.
 
-You can combine with constants like `SESSION_DISCRIMINATOR` for type discrimination.
+## Wire contract
 
----
+`PortalProgram` parses exact-length frames: Session 378 bytes, DepositReceipt 137
+bytes and SessionBridge 209 bytes. It rejects legacy frames and trailing bytes.
+The stable embedded structs are part of these frames, not an alternate API.
 
-## Helpers
+Session commitments match native `SessionIdentityV2`: domain-separated Borsh,
+full little-endian `u128` nonce and SHA-256 with the protocol field mask. Tests
+include independently generated native vectors for low and high nonce bits.
 
-### `encodeSystemProgramAssignData(newProgramOwner: PublicKey): Uint8Array`
-
-Builds **System Program** `Assign` instruction data (to change an account’s owner to a new program).  
-Typical use: with `TransactionInstruction`, `programId` is `SystemProgram.programId`, signed by the account itself.
-
----
-
-## Type exports
-
-The main entry re-exports from `./types`, mainly:
-
-- `NorthStarConfig`
-- `AccountInfo`
-- `ReadTransactionParams`
-- `EphemeralRollupAccountResponse` (Rollup RPC response shape)
-- `Address` (alias for `PublicKey`)
-
-Plus `TransactionResult`, `TransactionOptions`, various `*V1Signers`, `WalletSignTransaction`, etc. (see `src/index.ts`).
-
----
-
-## Integration tests and environment variables
-
-**`tests/real-integration.test.ts`** is a real on-chain integration example (requires Portal and RPC). Common environment variables:
-
-| Variable | Description |
-|------|------|
-| `PORTAL_PROGRAM_ID` | Portal program ID (Base58; defaults to devnet `HgNMJoLwbhLHwXgdfSQEL2xY1Uqr4995ffn4Sb3gW4af`) |
-| `VALIDATOR_RPC` | L1/local validator RPC (default `http://localhost:8899`) |
-| `VALIDATOR_IDENTITY` | Validator identity for session activation when `VALIDATOR_RPC` is a public L1 RPC |
-| `EPHEMERAL_ROLLUP_RPC` | ER RPC (default `http://localhost:8910`; ER health test is skipped by default) |
-| `TRANSFER_SOURCE_PRIVATE_KEY` | Funding private key Base58 (for test transfers) |
-
-Run unit tests (excluding integration):
-
-```bash
-npm test
-```
-
-Integration tests only:
-
-```bash
-npm run test:integration
-```
-
----
-
-## Other modules in source
-
-- **`src/config/networks.ts`**: Example `NETWORKS` constants (**not** exported from the package main entry); copy or maintain your own RPC list as needed.
-- **`src/builders/TransactionBuilder.ts`**: Another “structured” transaction layout (`programPublicKey` / `role`); **not currently exported from `src/index.ts`**; import from source paths if needed and keep account layout consistent with `NorthStarSDK`’s built-in instructions.
-
----
+Context-derived PDA seeds use `session_bridge_v2`, `deposit_receipt_v2` and
+`ingress_v2`. The session context binds L1 genesis, Portal, session, nonce, grid,
+validator and checkpoint profile. Never reuse an old context after reopening a
+session.
 
 ## License
 

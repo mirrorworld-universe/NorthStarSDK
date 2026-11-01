@@ -1,185 +1,118 @@
 import { Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
-import {
-  NorthStarSDK,
-  TokenBridgeProgram,
-} from "../src";
+import { TokenBridgeProgram } from "../src";
+import { BRIDGE, PORTAL, SESSION, sdkFixture, u64 } from "./fixtures/continuity";
 
-function writeU64LE(data: Uint8Array, offset: number, value: bigint) {
-  new DataView(data.buffer, data.byteOffset, data.byteLength).setBigUint64(
-    offset,
-    value,
-    true,
-  );
+const key = () => Keypair.generate().publicKey;
+const tokenProgram = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+
+async function tokenFixture() {
+  const value = sdkFixture();
+  const snapshot = await value.sdk.getSessionSnapshot();
+  const mint = key();
+  const owner = value.user.publicKey;
+  const sessionBridge = await value.sdk.portal.deriveSessionBridgePDA(snapshot.context, mint);
+  const erTokenAccount = value.sdk.tokenBridge.deriveErTokenAccountPDA(sessionBridge, owner);
+  return {
+    ...value, snapshot, mint, owner, sessionBridge, erTokenAccount,
+    vault: value.sdk.tokenBridge.deriveVaultPDA(sessionBridge)
+  };
 }
 
-describe("SPL token bridge", () => {
-  test("builds active-ER deposit and withdrawal instructions", () => {
-    const portalProgramId = Keypair.generate().publicKey;
-    const sdk = new NorthStarSDK({
-      portalProgramId,
-      customEndpoints: {
-        solana: "http://localhost:8899",
-        ephemeralRollup: "http://localhost:8910",
-      },
-    });
-    const payer = Keypair.generate().publicKey;
-    const owner = Keypair.generate().publicKey;
-    const sessionBridge = Keypair.generate().publicKey;
-    const erTokenAccount = Keypair.generate().publicKey;
-    const vault = Keypair.generate().publicKey;
-    const sourceTokenAccount = Keypair.generate().publicKey;
-    const vaultTokenAccount = Keypair.generate().publicKey;
-    const destinationTokenAccount = Keypair.generate().publicKey;
-    const mint = Keypair.generate().publicKey;
-    const tokenProgram = Keypair.generate().publicKey;
+async function depositFixture() {
+  const value = await tokenFixture();
+  return {
+    ...value, params: {
+      session: SESSION, sessionContext: value.snapshot.context, sequence: value.snapshot.nextSequence,
+      payer: key(), owner: value.owner, vault: value.vault, erTokenAccount: value.erTokenAccount,
+      sessionBridge: value.sessionBridge, sourceTokenAccount: key(), vaultTokenAccount: key(),
+      mint: value.mint, tokenProgram, amount: 600n, decimals: 6,
+    }
+  };
+}
 
-    const deposit = sdk.buildTokenBridgeDepositInstruction({
-      payer,
-      owner,
-      vault,
-      erTokenAccount,
-      sessionBridge,
-      sourceTokenAccount,
-      vaultTokenAccount,
-      mint,
-      tokenProgram,
-      amount: 600n,
-      decimals: 6,
-    });
-    expect(deposit.keys).toHaveLength(13);
-    expect(deposit.keys[0]).toMatchObject({
-      pubkey: payer,
-      isSigner: true,
-      isWritable: true,
-    });
-    expect(deposit.keys[1]).toMatchObject({
-      pubkey: owner,
-      isSigner: true,
-      isWritable: false,
-    });
-    expect(deposit.keys[2].isWritable).toBe(true);
-    expect(
-      deposit.keys[10].pubkey.equals(
-        sdk.tokenBridge.deriveDepositReceiptPDA(sessionBridge, erTokenAccount),
-      ),
-    ).toBe(true);
-    expect(deposit.keys[12].pubkey.equals(SystemProgram.programId)).toBe(true);
-
-    const withdrawal = sdk.buildTokenBridgeStartWithdrawalInstruction({
-      owner,
-      erTokenAccount,
-      sessionBridge,
-      destinationTokenAccount,
-      tokenProgram,
-      amount: 200n,
-      decimals: 6,
-    });
-    expect(withdrawal.keys).toHaveLength(6);
-    expect(withdrawal.data[0]).toBe(7);
-    expect(withdrawal.keys[4].pubkey.equals(destinationTokenAccount)).toBe(true);
+describe("authenticated SPL token bridge", () => {
+  test("builds custody plus the exact 17-account authenticated input contract", async () => {
+    const { sdk, params, snapshot } = await depositFixture();
+    const instruction = sdk.buildTokenBridgeDepositInstruction(params);
+    expect(instruction.programId.equals(BRIDGE)).toBe(true);
+    expect(instruction.data[0]).toBe(2);
+    expect(instruction.keys).toHaveLength(17);
+    expect(instruction.keys[0]).toEqual({ pubkey: params.payer, isSigner: true, isWritable: true });
+    expect(instruction.keys[1]).toEqual({ pubkey: params.owner, isSigner: true, isWritable: false });
+    expect(instruction.keys[10].pubkey.equals(sdk.tokenBridge.deriveDepositReceiptPDA(params.sessionBridge, params.erTokenAccount))).toBe(true);
+    expect(instruction.keys[12].pubkey.equals(SystemProgram.programId)).toBe(true);
+    expect(instruction.keys[14]).toEqual({ pubkey: SESSION, isSigner: false, isWritable: true });
+    expect(instruction.keys[15]).toEqual({ pubkey: sdk.tokenBridge.deriveOriginPDA(params.erTokenAccount), isSigner: false, isWritable: false });
+    expect(instruction.keys[16]).toEqual({ pubkey: await sdk.portal.deriveIngressRecordPDA(snapshot.context, 3n), isSigner: false, isWritable: true });
   });
 
-  test("separates ER token delegation payer from owner", () => {
-    const portalProgramId = Keypair.generate().publicKey;
-    const sdk = new NorthStarSDK({
-      portalProgramId,
-      customEndpoints: {
-        solana: "http://localhost:8899",
-        ephemeralRollup: "http://localhost:8910",
-      },
-    });
-    const payer = Keypair.generate().publicKey;
-    const owner = Keypair.generate().publicKey;
-    const erTokenAccount = Keypair.generate().publicKey;
-    const sessionBridge = Keypair.generate().publicKey;
-    const session = Keypair.generate().publicKey;
+  test("rejects changed context, ownership, vault and sequence bindings", async () => {
+    const { sdk, params } = await depositFixture();
+    expect(() => sdk.buildTokenBridgeDepositInstruction({ ...params, sessionContext: new Uint8Array(32).fill(12) })).toThrow("context");
+    expect(() => sdk.buildTokenBridgeDepositInstruction({ ...params, owner: key() })).toThrow("owner");
+    expect(() => sdk.buildTokenBridgeDepositInstruction({ ...params, vault: key() })).toThrow("canonical");
+    expect(() => sdk.buildTokenBridgeDepositInstruction({ ...params, sequence: 0n })).toThrow("sequence");
+  });
 
+  test("separates payer from owner and delegates the program PDA only by CPI", async () => {
+    const { sdk, snapshot, owner, mint, sessionBridge, erTokenAccount } = await tokenFixture();
+    const payer = key();
     const instruction = sdk.buildDelegateErTokenAccountInstruction({
-      payer,
-      owner,
-      erTokenAccount,
-      sessionBridge,
-      session,
-      gridId: 1n,
+      payer, owner, mint, sessionBridge, erTokenAccount,
+      session: SESSION, sessionContext: snapshot.context, sequence: 3n, gridId: 1n
     });
-
-    expect(instruction.keys).toHaveLength(10);
-    expect(instruction.keys[0]).toMatchObject({
-      pubkey: payer,
-      isSigner: true,
-      isWritable: true,
-    });
-    expect(instruction.keys[1]).toMatchObject({
-      pubkey: owner,
-      isSigner: true,
-      isWritable: false,
-    });
-    expect(instruction.keys[2].pubkey.equals(erTokenAccount)).toBe(true);
+    expect(instruction.keys).toHaveLength(13);
+    expect(instruction.keys[0]).toEqual({ pubkey: payer, isSigner: true, isWritable: true });
+    expect(instruction.keys[1]).toEqual({ pubkey: owner, isSigner: true, isWritable: false });
+    expect(instruction.keys[2]).toEqual({ pubkey: erTokenAccount, isSigner: false, isWritable: true });
+    expect(instruction.keys[3].pubkey.equals(BRIDGE)).toBe(true);
+    expect(instruction.keys[6].isWritable).toBe(true);
+    expect(instruction.keys[11]).toEqual({ pubkey: sdk.tokenBridge.deriveOriginPDA(erTokenAccount), isSigner: false, isWritable: true });
+    expect(instruction.keys[12].pubkey.equals(await sdk.portal.deriveIngressRecordPDA(snapshot.context, 3n))).toBe(true);
   });
 
-  test("builds token-account request and final undelegation instructions", () => {
-    const portalProgramId = Keypair.generate().publicKey;
-    const sdk = new NorthStarSDK({
-      portalProgramId,
-      customEndpoints: {
-        solana: "http://localhost:8899",
-        ephemeralRollup: "http://localhost:8910",
-      },
+  test("includes the canonical mint in seven-account deferred withdrawal", async () => {
+    const { sdk, snapshot, owner, mint, sessionBridge, erTokenAccount } = await tokenFixture();
+    const destinationTokenAccount = key();
+    const instruction = sdk.buildTokenBridgeStartWithdrawalInstruction({
+      owner, mint, sessionBridge, erTokenAccount,
+      sessionContext: snapshot.context, destinationTokenAccount, tokenProgram, amount: 200n, decimals: 6
     });
-    const payer = Keypair.generate().publicKey;
-    const authority = Keypair.generate().publicKey;
-    const erTokenAccount = Keypair.generate().publicKey;
-    const session = Keypair.generate().publicKey;
-    const requestPDA = PublicKey.findProgramAddressSync(
-      [Buffer.from("undelegation_request"), erTokenAccount.toBuffer()],
-      portalProgramId,
-    )[0];
+    expect(instruction.data[0]).toBe(7);
+    expect(instruction.keys).toHaveLength(7);
+    expect(instruction.keys[4]).toEqual({ pubkey: destinationTokenAccount, isSigner: false, isWritable: false });
+    expect(instruction.keys[6]).toEqual({ pubkey: mint, isSigner: false, isWritable: false });
+  });
 
-    const request = sdk.buildRequestErTokenAccountUndelegationInstruction({
-      payer,
-      authority,
-      erTokenAccount,
-      session,
-    });
-    expect(request.data[0]).toBe(9);
-    expect(request.keys).toHaveLength(9);
-    expect(request.keys[0]).toMatchObject({
-      pubkey: payer,
-      isSigner: true,
-      isWritable: true,
-    });
-    expect(request.keys[1]).toMatchObject({
-      pubkey: authority,
-      isSigner: true,
-      isWritable: false,
-    });
-    expect(request.keys[7].pubkey.equals(requestPDA)).toBe(true);
+  test("keeps initialization derived from the same registry", async () => {
+    const { sdk, user, owner, sessionBridge, erTokenAccount, vault } = await tokenFixture();
+    const initialize = await sdk.buildInitializeTokenVaultInstruction({ payer: user.publicKey, sessionBridge, vaultTokenAccount: key() });
+    expect(initialize.keys[1].pubkey.equals(vault)).toBe(true);
+    const initializeEr = await sdk.buildInitializeErTokenAccountInstruction({ payer: user.publicKey, sessionBridge, owner });
+    expect(initializeEr.keys[1].pubkey.equals(erTokenAccount)).toBe(true);
+    expect(initializeEr.keys[3].pubkey.equals(PORTAL)).toBe(true);
+  });
 
-    const undelegate = sdk.buildUndelegateErTokenAccountInstruction({
-      authority,
-      erTokenAccount,
-      session,
-    });
-    expect(undelegate.keys).toHaveLength(9);
-    expect(undelegate.keys[8].pubkey.equals(requestPDA)).toBe(true);
+  test("does not construct unbound immediate payouts or lifecycle requests", () => {
+    const { sdk } = sdkFixture();
+    expect(() => sdk.buildTokenBridgeWithdrawInstruction({})).toThrow("no transaction is signed");
+    expect(() => sdk.buildRequestErTokenAccountUndelegationInstruction({})).toThrow();
+    expect(() => sdk.buildUndelegateErTokenAccountInstruction({})).toThrow();
   });
 
   test("parses cumulative vault deposit and withdrawal totals", () => {
-    const sessionBridge = Keypair.generate().publicKey;
-    const mint = Keypair.generate().publicKey;
-    const vaultTokenAccount = Keypair.generate().publicKey;
-    const tokenProgram = Keypair.generate().publicKey;
     const data = new Uint8Array(146);
     data[0] = 1;
-    data.set(sessionBridge.toBytes(), 1);
-    data.set(mint.toBytes(), 33);
-    data.set(vaultTokenAccount.toBytes(), 65);
+    const registry = key();
+    data.set(registry.toBytes(), 1);
+    data.set(key().toBytes(), 33);
+    data.set(key().toBytes(), 65);
     data.set(tokenProgram.toBytes(), 97);
-    writeU64LE(data, 129, 600n);
-    writeU64LE(data, 137, 200n);
+    u64(data, 129, 600n);
+    u64(data, 137, 200n);
     data[145] = 254;
-
     const vault = TokenBridgeProgram.parseTokenVault(data);
+    expect(vault.sessionBridge.equals(registry)).toBe(true);
     expect(vault.deposited).toBe(600n);
     expect(vault.withdrawn).toBe(200n);
     expect(vault.bump).toBe(254);

@@ -1,106 +1,65 @@
-import { PublicKey } from "@solana/web3.js";
-import { PortalProgram } from "../programs/portal";
+import { Connection, PublicKey } from "@solana/web3.js";
+import bs58 from "bs58";
+import { checkedHash, checkedInteger, Hash32 } from "../programs/continuity";
+import { PortalProgram, Session } from "../programs/portal";
 
-export interface Session {
-  pda: PublicKey;
-  gridId: number;
-  owner: PublicKey;
-  feeCap: bigint;
-  ttlSlots: bigint;
-  createdAt: number;
-  status: "active" | "expired" | "closed";
+export interface SessionSnapshot {
+  address: PublicKey;
+  state: Session;
+  context: Hash32;
+  nextSequence: bigint;
+  l1Slot: bigint;
 }
 
-export interface OpenSessionParamsSDK {
-  owner: PublicKey;
-  gridId: number;
-  ttlSlots?: bigint;
-  feeCap?: bigint;
+export function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
 export class SessionManager {
-  private portalProgramId: PublicKey;
-  private sessions: Map<string, Session> = new Map();
+  private readonly genesis: Hash32;
+  private readonly profile: Hash32;
 
-  constructor(portalProgramId: PublicKey) {
-    this.portalProgramId = portalProgramId;
+  constructor(
+    private readonly rpc: Connection,
+    private readonly portal: PortalProgram,
+    private readonly l1GenesisHash: string,
+    profile: Hash32,
+  ) {
+    this.genesis = checkedHash(bs58.decode(l1GenesisHash), "L1 genesis");
+    this.profile = checkedHash(profile, "checkpoint profile");
   }
 
-  /**
-   * Open a new session for Portal operations
-   * Creates and tracks a session for delegated execution
-   *
-   * @param params - Session creation parameters
-   * @returns Session address
-   */
-  async openSession(params: OpenSessionParamsSDK): Promise<PublicKey> {
-    const {
-      owner,
-      gridId,
-      feeCap = BigInt(1_000_000),
-      ttlSlots = BigInt(2000),
-    } = params;
-
-    const sessionPDA = await PortalProgram.deriveSessionPDA(this.portalProgramId);
-
-    const session: Session = {
-      pda: sessionPDA,
-      gridId,
-      owner,
-      feeCap,
-      ttlSlots,
-      createdAt: Date.now(),
-      status: "active",
-    };
-
-    this.sessions.set(sessionPDA.toBase58(), session);
-
-    console.log(`✓ Session opened: ${sessionPDA}`);
-    console.log(`  Grid ID: ${gridId}`);
-    console.log(`  Fee Cap: ${feeCap} lamports`);
-    console.log(`  TTL: ${ttlSlots} slots`);
-
-    return sessionPDA;
-  }
-
-  /**
-   * Get session information
-   */
-  async getSession(sessionPDA: PublicKey): Promise<Session | null> {
-    return this.sessions.get(sessionPDA.toBase58()) || null;
-  }
-
-  /**
-   * Check if session is still valid
-   */
-  async isSessionValid(sessionPDA: PublicKey): Promise<boolean> {
-    const session = await this.getSession(sessionPDA);
-    if (!session) return false;
-
-    const slotDuration = 400;
-    const maxAge = Number(session.ttlSlots) * slotDuration;
-    const age = Date.now() - session.createdAt;
-
-    return session.status === "active" && age < maxAge;
-  }
-
-  /**
-   * Close a session
-   */
-  async closeSession(sessionPDA: PublicKey): Promise<void> {
-    const session = this.sessions.get(sessionPDA.toBase58());
-    if (session) {
-      session.status = "closed";
-      console.log(`✓ Session closed: ${sessionPDA}`);
+  async verifyNetwork(): Promise<void> {
+    if (await this.rpc.getGenesisHash() !== this.l1GenesisHash) {
+      throw new Error("L1 genesis differs from the configured network");
     }
   }
 
-  /**
-   * List all active sessions
-   */
-  getActiveSessions(): Session[] {
-    return Array.from(this.sessions.values()).filter(
-      (s) => s.status === "active",
-    );
+  async getSession(): Promise<SessionSnapshot> {
+    await this.verifyNetwork();
+    const address = await this.portal.deriveSessionPDA();
+    const response = await this.rpc.getAccountInfoAndContext(address, "confirmed");
+    const slot = checkedInteger(response.context.slot, 64, "L1 context slot");
+    const account = response.value;
+    if (!account || account.executable || !account.owner.equals(this.portal.getProgramId())) {
+      throw new Error("Canonical Portal session is missing or has the wrong owner");
+    }
+    const state = this.portal.parseSession(account.data);
+    if (!sameBytes(state.l1Genesis, this.genesis) || !sameBytes(state.profile, this.profile)) {
+      throw new Error("Session network or checkpoint profile differs from configuration");
+    }
+    const bump = PublicKey.findProgramAddressSync([Buffer.from("session")], this.portal.getProgramId())[1];
+    const expires = state.createdAt + state.ttlSlots;
+    const lastSlot = expires > 0xffff_ffff_ffff_ffffn ? 0xffff_ffff_ffff_ffffn : expires;
+    if (state.bump !== bump || slot < state.createdAt || slot > lastSlot) {
+      throw new Error("Session binding is invalid or expired");
+    }
+    return {
+      address,
+      state,
+      context: this.portal.sessionContext(address, state),
+      nextSequence: checkedInteger(state.ingressCount + 1n, 64, "next input sequence"),
+      l1Slot: slot,
+    };
   }
 }
