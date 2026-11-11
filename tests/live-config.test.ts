@@ -11,4 +11,19 @@ describe("funded development deployment guard", () => {
     expect(() => assertDevelopmentDeployment("unknown-genesis", "https://api.devnet.solana.com", true)).toThrow();
     expect(() => assertDevelopmentDeployment("local-genesis", "http://localhost:8899", false)).toThrow();
   });
+
+  test("explicit host E2E opt-in permits only loopback and never mainnet", () => {
+    const previous = process.env.NORTHSTAR_ALLOW_LOCAL_HOST_E2E;
+    process.env.NORTHSTAR_ALLOW_LOCAL_HOST_E2E = "1";
+    try {
+      expect(() => assertDevelopmentDeployment("local-genesis", "http://127.0.0.1:8899", false)).not.toThrow();
+      expect(() => assertDevelopmentDeployment("local-genesis", "https://example.com", false)).toThrow();
+      expect(() => assertDevelopmentDeployment("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", "http://localhost:8899", false)).toThrow("never run on mainnet");
+      process.env.NORTHSTAR_ALLOW_LOCAL_HOST_E2E = "0";
+      expect(() => assertDevelopmentDeployment("local-genesis", "http://localhost:8899", false)).toThrow();
+    } finally {
+      if (previous === undefined) delete process.env.NORTHSTAR_ALLOW_LOCAL_HOST_E2E;
+      else process.env.NORTHSTAR_ALLOW_LOCAL_HOST_E2E = previous;
+    }
+  });
 });
