@@ -157,6 +157,26 @@ destination balance and settlement status.
 `buildTokenBridgeTransferInstruction` constructs an ER token transfer without a
 payout. It does not submit transactions.
 
+## ER transaction submission
+
+Use `sdk.sendAndConfirmErTransaction(signedTransaction, options)` for transactions
+already built and signed for `getEphemeralRpc()`. It pins the execution session,
+polls ER receipts, and retries only the exact checkpoint-settlement-pending
+`SendTransactionError` with an empty submission signature. Every broadcast uses
+the original signed bytes; it never refreshes the blockhash or signs a replacement.
+Other errors propagate. An observed receipt suppresses further broadcasts even if
+a later status poll returns null. Defaults are a five-minute timeout, 500 ms polling,
+and at most 600 attempts. Timeout/expiry requires reconciling the saved signature,
+not generating another request. Existing L1 submission methods are unchanged.
+
+For checkpoint-gated VRF, use `calculateErVrfDeadlineSlots(budget, limits)` with the
+actual ER slot duration and Coordinator limits. Include checkpoint wait,
+challenge/finality, queue wait, delivery, and a safety margin in milliseconds.
+For example, 60,000 + 30,000 + 60,000 + 30,000 + 60,000 ms at 10 ms per ER slot
+requires 24,000 slots. The helper rounds up and rejects an insufficient ceiling;
+it does not silently clamp to the old L1-oriented 1,000-slot limit. This is budget
+calculation, not a latency guarantee or an on-chain configuration update.
+
 ## Unavailable lifecycle operations
 
 Close-session, undelegation, undelegation-request and immediate token-payout APIs
