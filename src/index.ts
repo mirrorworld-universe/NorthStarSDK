@@ -10,6 +10,7 @@ import { checkedHash, checkedInteger, Hash32 } from "./programs/continuity";
 import { PortalProgram, WITHDRAWAL_SINK } from "./programs/portal";
 import { TokenBridgeProgram } from "./programs/tokenBridge";
 import { sameBytes, SessionManager, SessionSnapshot } from "./session/SessionManager";
+import { ErTransactionOptions, submitErTransaction } from "./solana/erTransaction";
 import {
   getVersionedTxSignatureBase58, sendRawVersionedTransaction,
   signVersionedTransaction, toPublicKey,
@@ -20,6 +21,9 @@ export { TOKEN_BRIDGE_PROGRAM_ID, TokenBridgeProgram } from "./programs/tokenBri
 export { PortalProgram, SESSION_DISCRIMINATOR, SESSION_LEN } from "./programs/portal";
 export type { Session, DepositReceipt, SessionBridge } from "./programs/portal";
 export { sessionCommitment } from "./programs/continuity";
+export { calculateErVrfDeadlineSlots } from "./solana/erVrfDeadline";
+export type { ErVrfDeadlineBudget, VrfDeadlineLimits } from "./solana/erVrfDeadline";
+export type { ErTransactionOptions } from "./solana/erTransaction";
 export type { Hash32, SessionIdentity } from "./programs/continuity";
 export type { SessionSnapshot } from "./session/SessionManager";
 export * from "./types";
@@ -83,7 +87,9 @@ export class NorthStarSDK {
     this.portal = new PortalProgram(this.portalProgramId);
     this.tokenBridge = new TokenBridgeProgram(bridge);
     this.rpc = new Connection(config.customEndpoints.solana, "confirmed");
-    this.ephemeral_rpc = new Connection(config.customEndpoints.ephemeralRollup, "confirmed");
+    this.ephemeral_rpc = new Connection(config.customEndpoints.ephemeralRollup, {
+      commitment: "confirmed", disableRetryOnRateLimit: true,
+    });
     this.ephemeralRollupReader = new EphemeralRollupReader(config.customEndpoints.ephemeralRollup);
     this.accountResolver = new AccountResolver(this.ephemeralRollupReader, this.rpc);
   }
@@ -445,6 +451,17 @@ export class NorthStarSDK {
     const signature = getVersionedTxSignatureBase58(transaction);
     await this.confirmSignature(signature, options);
     return { signature };
+  }
+
+  async sendAndConfirmErTransaction(transaction: VersionedTransaction, options: ErTransactionOptions = {}): Promise<TransactionResult> {
+    let expected: SessionSnapshot | undefined;
+    return submitErTransaction(this.ephemeral_rpc, transaction, async () => {
+      const snapshot = await this.getExecutionSession();
+      if (expected && (!snapshot.address.equals(expected.address) || !sameBytes(snapshot.context, expected.context))) {
+        throw new Error("ER session changed while confirming the saved transaction");
+      }
+      expected = snapshot;
+    }, options);
   }
 
   private async sendTx(
