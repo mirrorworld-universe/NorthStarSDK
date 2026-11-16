@@ -1,4 +1,5 @@
 export interface ErVrfDeadlineBudget {
+  /** Observed slot interval used for estimation, not the validator's configured sleep. */
   erSlotDurationMs: number;
   checkpointWaitMs: number;
   challengeAndFinalityMs: number;
@@ -12,6 +13,11 @@ export interface VrfDeadlineLimits {
   maximumSlots: number;
 }
 
+/**
+ * Estimates a slot budget, then applies the Coordinator's minimum.
+ * The result is not a wall-clock TTL: slot cadence varies and the on-chain
+ * minimum can make the effective deadline much longer than the requested budget.
+ */
 export function calculateErVrfDeadlineSlots(budget: ErVrfDeadlineBudget, limits: VrfDeadlineLimits): number {
   const components = [budget.checkpointWaitMs, budget.challengeAndFinalityMs, budget.queueWaitMs, budget.deliveryMarginMs, budget.safetyMs];
   if (!Number.isSafeInteger(budget.erSlotDurationMs) || budget.erSlotDurationMs <= 0 ||

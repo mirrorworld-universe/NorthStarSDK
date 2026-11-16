@@ -170,12 +170,14 @@ and at most 600 attempts. Timeout/expiry requires reconciling the saved signatur
 not generating another request. Existing L1 submission methods are unchanged.
 
 For checkpoint-gated VRF, use `calculateErVrfDeadlineSlots(budget, limits)` with the
-actual ER slot duration and Coordinator limits. Include checkpoint wait,
+observed ER slot interval and Coordinator limits. Include checkpoint wait,
 challenge/finality, queue wait, delivery, and a safety margin in milliseconds.
-For example, 60,000 + 30,000 + 60,000 + 30,000 + 60,000 ms at 10 ms per ER slot
-requires 24,000 slots. The helper rounds up and rejects an insufficient ceiling;
-it does not silently clamp to the old L1-oriented 1,000-slot limit. This is budget
-calculation, not a latency guarantee or an on-chain configuration update.
+The validator's configured 10 ms sleep excludes bank-processing time and is not
+an observed slot interval. A 24,000-slot on-chain minimum is about 14.4 minutes
+at an observed 36 ms per slot; a 65,535-slot maximum is about 39.3 minutes.
+The helper rounds up, applies the on-chain minimum, and rejects an insufficient
+ceiling. It does not guarantee a wall-clock TTL or change on-chain configuration.
+Checkpoint-gated signing and settlement-pending write retries remain required.
 
 ## Unavailable lifecycle operations
 

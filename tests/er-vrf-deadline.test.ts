@@ -16,6 +16,14 @@ it("budgets ER slots for checkpoint, independent finality, queue and delivery", 
   expect(calculateErVrfDeadlineSlots(budget, { minimumSlots: 30_000, maximumSlots: 65_535 })).toBe(30_000);
 });
 
+it("does not reinterpret the on-chain minimum as a wall-clock guarantee", () => {
+  const observedSlotMs = 36;
+  const slots = calculateErVrfDeadlineSlots({ ...budget, erSlotDurationMs: observedSlotMs }, { minimumSlots: 24_000, maximumSlots: 65_535 });
+  expect(slots).toBe(24_000);
+  expect(slots * observedSlotMs).toBe(864_000);
+  expect(65_535 * observedSlotMs).toBe(2_359_260);
+});
+
 it.each([0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])("rejects an invalid ER slot duration: %p", erSlotDurationMs => {
   expect(() => calculateErVrfDeadlineSlots({ ...budget, erSlotDurationMs }, { minimumSlots: 2, maximumSlots: 65_535 })).toThrow();
 });
