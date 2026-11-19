@@ -4,6 +4,7 @@
   "description": "SDK for interacting with Ephemeral Rollups and constructing Portal transactions on Solana",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": ["dist"],
   "scripts": {
     "build": "tsc",
     "typecheck:live": "tsc --noEmit --target ES2020 --module commonjs --esModuleInterop --skipLibCheck --strict tests/real-integration.test.ts tests/spl-token-live-e2e.test.ts",

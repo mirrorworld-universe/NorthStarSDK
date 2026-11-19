@@ -1,11 +1,19 @@
 # Northstar SDK
 
-TypeScript bindings for the unreleased Northstar continuity protocol. This branch
-accepts only the framed session, receipt and bridge accounts used by that protocol.
-It does not fall back to legacy instruction selectors or account layouts.
+TypeScript bindings for the Northstar continuity-v2 protocol. These bindings accept
+only the framed session, receipt and bridge accounts used by that protocol. They do
+not fall back to legacy instruction selectors or account layouts.
 
 The native runtime must enable `checkpoint-continuity-v2`. These bindings do not
 establish hosted deployment qualification or new proof acceptance.
+
+To opt into the devnet SDK prerelease without changing the stable npm channel:
+
+```bash
+npm install @sonicsvm/northstar-sdk@devnet
+```
+
+Use the exact prerelease version in your lockfile for reproducible deployments.
 
 ## Build and test
 
@@ -168,6 +176,36 @@ Other errors propagate. An observed receipt suppresses further broadcasts even i
 a later status poll returns null. Defaults are a five-minute timeout, 500 ms polling,
 and at most 600 attempts. Timeout/expiry requires reconciling the saved signature,
 not generating another request. Existing L1 submission methods are unchanged.
+
+### Show VRF request receipt before settlement
+
+Use the fast acknowledgement instead of the long send/confirm call when the app
+needs an early status. Save the signed transaction and its request identity before
+submitting it.
+
+```ts
+const receipt = await sdk.sendAndAcknowledgeErTransaction(signedVrfRequest);
+switch (receipt.status) {
+  case "er-confirmed":
+    showStatus("Request received — randomness pending");
+    break;
+  case "settlement-pending":
+    showStatus("Waiting for a checkpoint before the ER can accept the request");
+    break;
+  case "unconfirmed":
+    showStatus("Request confirmation pending");
+    break;
+}
+```
+
+`er-confirmed` requires a successful ER receipt for the exact signature and a
+matching ER session. It is not a VRF result, callback receipt, or L1 settlement.
+The SDK checks immediately after submission, then polls within a default 2.8-second
+budget from the call, excluding wallet signing. `settlement-pending` reports an
+observed admission refusal with no later ambiguous send; `unconfirmed` does not
+mean the transaction failed. Reconcile the saved signature in the same session.
+Do not create a replacement request or show a VRF result based on either status.
+Settlement backpressure can still prevent an acknowledgement inside the budget.
 
 For checkpoint-gated VRF, use `calculateErVrfDeadlineSlots(budget, limits)` with the
 observed ER slot interval and Coordinator limits. Include checkpoint wait,
