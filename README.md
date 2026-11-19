@@ -1,384 +1,265 @@
-# North Star SDK
+# Northstar SDK
 
-用于在 Solana 上与 **Ephemeral Rollup（临时 Rollup）** 交互，并构造 **Portal** 链上程序的 TypeScript/JavaScript SDK。
+TypeScript bindings for the Northstar continuity-v2 protocol. These bindings accept
+only the framed session, receipt and bridge accounts used by that protocol. They do
+not fall back to legacy instruction selectors or account layouts.
 
-- **依赖**：`@solana/web3.js`、`@dao-xyz/borsh`、`axios`、`bs58`
-- **入口**：构建后为 `dist/index.js`，类型声明为 `dist/index.d.ts`
+The native runtime must enable `checkpoint-continuity-v2`. These bindings do not
+establish hosted deployment qualification or new proof acceptance.
 
----
-
-## 安装与构建
+To opt into the devnet SDK prerelease without changing the stable npm channel:
 
 ```bash
-npm install
+npm install @sonicsvm/northstar-sdk@devnet
+```
+
+Use the exact prerelease version in your lockfile for reproducible deployments.
+
+## Build and test
+
+```bash
+npm ci
 npm run build
+npm test -- --runInBand
 ```
 
-在其它项目中本地引用示例：
+The default test command excludes funded live tests. Unit tests use deterministic
+RPC fixtures; they are not evidence of a deployed validator lifecycle.
 
-```json
-{
-  "dependencies": {
-    "@sonicsvm/northstar-sdk": "file:../NorthStarSDK"
-  }
-}
-```
+## Explicit deployment identity
 
----
-
-## 快速开始
-
-### 1. 配置 `NorthStarConfig`
+Obtain all identities from the actual deployment. The SDK provides no production
+checkpoint profile or implicit shared bridge deployment.
 
 ```typescript
 import { NorthStarSDK, PublicKey } from "@sonicsvm/northstar-sdk";
 
-const sdk = new NorthStarSDK({
-  portalProgramId: new PublicKey("你的Portal程序ID"),
-  customEndpoints: {
-    solana: "https://api.devnet.solana.com",
-    ephemeralRollup: "https://ephemeral.devnet.sonic.game",
-  },
-});
-```
-
-| 字段 | 说明 |
-|------|------|
-| `portalProgramId` | Portal 程序在 Solana 上的公钥 |
-| `customEndpoints.solana` | Solana L1 JSON-RPC |
-| `customEndpoints.ephemeralRollup` | Ephemeral Rollup 的 JSON-RPC |
-
-构造完成后，SDK 会在控制台打印初始化信息（RPC 与 Portal 程序地址）。
-
-### 2. 钱包签名回调 `WalletSignTransaction`
-
-多数上链方法采用 **「本地部分签名 + 钱包补签」** 流程：
-
-1. SDK 用 `Connection.getLatestBlockhash` 组装 `VersionedTransaction`
-2. 使用 `signers` 里提供的 `Keypair` 做本地签名（如被委托账户）
-3. 调用你传入的 `signTransaction`，由钱包（或本地 keypair）完成剩余签名
-4. 广播并在 L1 上确认（HTTP 轮询，不依赖 WebSocket）
-
-类型定义：
-
-```typescript
-type WalletSignTransaction = (
-  transaction: VersionedTransaction,
-) => Promise<VersionedTransaction>;
-```
-
-**纯本地测试**（无浏览器钱包）可模拟钱包：对交易再签一次所需 keypair，例如集成测试中的写法：
-
-```typescript
-import {
-  NorthStarSDK,
-  signVersionedTransaction,
-  VersionedTransaction,
-  Keypair,
-} from "@sonicsvm/northstar-sdk";
-
-function walletSignLocal(...keypairs: Keypair[]) {
-  return async (tx: VersionedTransaction) =>
-    signVersionedTransaction(tx, keypairs);
+function connect(deployment: {
+  portal: PublicKey;
+  tokenBridge: PublicKey;
+  l1GenesisHash: string;
+  checkpointProfile: Uint8Array;
+  l1Rpc: string;
+  erRpc: string;
+}) {
+  return new NorthStarSDK({
+    portalProgramId: deployment.portal,
+    tokenBridgeProgramId: deployment.tokenBridge,
+    l1GenesisHash: deployment.l1GenesisHash,
+    checkpointProfile: deployment.checkpointProfile,
+    customEndpoints: {
+      solana: deployment.l1Rpc,
+      ephemeralRollup: deployment.erRpc,
+    },
+  });
 }
+```
 
-await sdk.openSession(
+The genesis hash must decode to exactly 32 nonzero bytes. The profile must also be
+32 nonzero bytes. Before preparing L1 actions, the SDK verifies the RPC genesis.
+Session actions additionally validate canonical address, ownership, incarnation,
+profile, TTL and input counters. A stale input sequence fails on-chain; refresh the
+snapshot only after resolving the previous transaction's outcome.
+
+`getSessionSnapshot()` returns the L1 session, decoded state, context commitment
+and next input sequence. `getExecutionSession()` additionally requires a healthy
+ER runtime and the same session incarnation on both endpoints. Checkpoint errors,
+missing session identity and malformed status fail closed.
+
+## Supported L1 actions
+
+- `buildOpenSession` / `openSession` bind the full network/profile identity and
+  persistent session-epoch PDA. Pass the actual native validator in
+  `OpenSessionConfig.validator` when it differs from the signing wallet.
+- `buildDepositFee` / `depositFee` use a mutable session, context-derived receipt
+  and the next authenticated input PDA.
+- `buildDelegate` / `delegate` support at most two wallet accounts per transaction.
+  The SDK stages System Program ownership transfer and reserves one input per
+  account. Program-owned accounts require CPI from their owner program; a wallet
+  signature cannot replace that authorization.
+- `buildRegisterSessionBridgeInstruction` requires the session authority and
+  configured bridge program. Registration is not permissionless.
+
+Amounts accept `bigint` or safe integer numbers. Encoders reject overflow, unsafe
+number precision, nonpositive amounts and out-of-range mint decimals.
+
+Wallet methods first apply local signatures, then call `WalletSignTransaction`.
+They send to L1 and confirm by bounded HTTP polling. Preflight is enabled by
+default. A confirmation timeout is an uncertain outcome, not permission to sign a
+replacement transaction.
+
+```typescript
+import { signVersionedTransaction } from "@sonicsvm/northstar-sdk";
+
+await sdk.depositFee(
   user.publicKey,
-  gridId,
-  2000,
-  1_000_000,
-  walletSignLocal(user),
+  10_000_000n,
+  async transaction => signVersionedTransaction(transaction, [user]),
   {},
 );
 ```
 
-主入口同时导出 `signVersionedTransaction`、`getVersionedTxSignatureBase58`、`toPublicKey`，便于与 `VersionedTransaction` 组合使用。
+Builder-only methods return instructions, fee payer, blockhash and last valid
+block height. `buildDelegate` also returns buffer keypairs that must sign.
 
----
+## Token custody and delegation
 
-## 核心类：`NorthStarSDK`
-
-### 连接与程序
-
-| 方法 | 说明 |
-|------|------|
-| `getRpc()` | Solana L1 的 `Connection`（commitment 为 `confirmed`） |
-| `getEphemeralRpc()` | Ephemeral Rollup 的 `Connection` |
-| `getPortalProgramId()` | Portal 程序 `PublicKey` |
-| `portal` | `PortalProgram` 实例（PDA 推导、指令编码、账户解析） |
-| `accountResolver` | `AccountResolver`，按数据源解析账户 |
-
-### 密钥工具
-
-| 方法 | 说明 |
-|------|------|
-| `generateKeyPair()` | 生成新的 `Keypair` |
-| `createKeyPairFromBase58(privateKeyBase58)` | 从 Base58 私钥导入（支持 32 字节 seed 或 64 字节 secret key） |
-
-### 账户读取
-
-| 方法 | 说明 |
-|------|------|
-| `getAccountInfo(address, search_source)` | 查询单个账户 |
-| `getMultipleAccounts(addresses, search_source)` | 批量查询 |
-
-**`search_source` 实际行为**（需显式指定，不会自动降级）：
-
-- `"ephemeral"`：仅通过 Ephemeral Rollup RPC 的 `getAccountInfo` 读取；失败则抛错。
-- `"solana"`：仅通过 L1 `Connection.getAccountInfo` 读取；账户不存在则抛错。
-
-返回类型 `AccountInfo`：
+Low-level token builders do not sign, send or establish RPC readiness. Use a fresh
+L1 snapshot for input creation and an execution snapshot before ER submission.
+Their explicit context and sequence allow composition without hidden counters.
 
 ```typescript
-interface AccountInfo {
-  address: PublicKey;
-  data: Uint8Array;
-  executable: boolean;
-  lamports: bigint;
-  owner: PublicKey;
-  slot: bigint;
-  source: "ephemeral-rollup" | "solana";
+const snapshot = await sdk.getSessionSnapshot();
+const registry = await sdk.portal.deriveSessionBridgePDA(snapshot.context, mint);
+const erTokenAccount = sdk.tokenBridge.deriveErTokenAccountPDA(registry, owner);
+
+const deposit = sdk.buildTokenBridgeDepositInstruction({
+  payer,
+  owner,
+  session: snapshot.address,
+  sessionContext: snapshot.context,
+  sequence: snapshot.nextSequence,
+  sessionBridge: registry,
+  vault: sdk.tokenBridge.deriveVaultPDA(registry),
+  erTokenAccount,
+  sourceTokenAccount,
+  vaultTokenAccount,
+  mint,
+  tokenProgram,
+  amount: 600n,
+  decimals: 6,
+});
+```
+
+`buildInitializeTokenVaultInstruction` and
+`buildInitializeErTokenAccountInstruction` initialize custody metadata.
+`buildDelegateErTokenAccountInstruction` takes the same explicit session context,
+sequence and mint, plus `gridId`. Its 13-account contract includes the origin
+baseline and authenticated input. The bridge signs its account PDA during CPI.
+A program-owned token authority must provide its own signed CPI; `payer` remains a
+separate funded signer.
+
+Deposits use the 17-account custody/input contract. The SDK rejects mismatched
+registry, owner-derived ER account, vault and session bindings. The on-chain
+programs remain responsible for custody and instruction authorization.
+
+Before the first token deposit, call `depositFee` with the session validator as
+recipient to fund the runtime manager's ER SOL balance. The manager signs
+authenticated token-input executions and pays their fees and cursor rent,
+independently of the user transaction fee payer. L1 SOL alone does not fund it.
+This SOL funding input must precede the token input in session ingress order.
+
+## Deferred payouts
+
+`buildErSolWithdrawalInstructions` constructs Portal `StartWithdrawal` after
+checking L1/ER identity and runtime health. Submit its instructions to
+`getEphemeralRpc()`, not L1. `buildErSolWithdrawal` uses the same account as source
+and recipient.
+
+For SPL, call `getExecutionSession()` and pass its context to
+`buildTokenBridgeStartWithdrawalInstruction`. Include `mint`: the seven-account
+contract checks mint decimals before the ER debit. Settlement pays the destination
+on L1 later. An ER debit alone is not evidence of payout; inspect the finalized L1
+destination balance and settlement status.
+
+`buildTokenBridgeTransferInstruction` constructs an ER token transfer without a
+payout. It does not submit transactions.
+
+## ER transaction submission
+
+Use `sdk.sendAndConfirmErTransaction(signedTransaction, options)` for transactions
+already built and signed for `getEphemeralRpc()`. It pins the execution session,
+polls ER receipts, and retries only the exact checkpoint-settlement-pending
+`SendTransactionError` with an empty submission signature. Every broadcast uses
+the original signed bytes; it never refreshes the blockhash or signs a replacement.
+Other errors propagate. An observed receipt suppresses further broadcasts even if
+a later status poll returns null. Defaults are a five-minute timeout, 500 ms polling,
+and at most 600 attempts. Timeout/expiry requires reconciling the saved signature,
+not generating another request. Existing L1 submission methods are unchanged.
+
+### Show VRF request receipt before settlement
+
+Use the fast acknowledgement instead of the long send/confirm call when the app
+needs an early status. Save the signed transaction and its request identity before
+submitting it.
+
+```ts
+const receipt = await sdk.sendAndAcknowledgeErTransaction(signedVrfRequest);
+switch (receipt.status) {
+  case "er-confirmed":
+    showStatus("Request received — randomness pending");
+    break;
+  case "settlement-pending":
+    showStatus("Waiting for a checkpoint before the ER can accept the request");
+    break;
+  case "unconfirmed":
+    showStatus("Request confirmation pending");
+    break;
 }
 ```
 
-结合 `sdk.portal.parseSession` 等可解析 Portal 相关账户数据（见下文 **PortalProgram**）。
-
-### 健康检查
-
-| 方法 | 说明 |
-|------|------|
-| `checkHealth()` | 返回 `{ solana: boolean, ephemeralRollup: boolean }` |
-
-### 交易发送与确认
-
-| 方法 | 说明 |
-|------|------|
-| `sendAndConfirmTransactionWithoutWebsocket(tx, options?)` | 发送已签名的 `VersionedTransaction`，HTTP 轮询确认 |
-| `confirmSignature(signature, options?)` | 仅等待给定签名达到指定 commitment |
-
-**`TransactionOptions`**（可选）：
-
-| 字段 | 说明 |
-|------|------|
-| `commitment` | `"processed"` \| `"confirmed"` \| `"finalized"`（默认 `"confirmed"`） |
-| `skipPreflight` | 是否跳过预检（默认 `true`） |
-| `maxAttempts` | 确认轮询最大次数（默认 `20`） |
-| `intervalMs` | 轮询间隔毫秒（默认 `1000`） |
-
----
-
-## Portal 链上操作（一键发送）
-
-以下方法内部会组 `VersionedTransaction`，先本地签 `signers` 中的 keypair，再调用 `signTransaction`，最后 `sendAndConfirmTransactionWithoutWebsocket`。
-
-### `openSession`
-
-打开会话（创建 Session PDA、关联 FeeVault 等，具体以链上程序为准）。
-
-```typescript
-await sdk.openSession(
-  user,                    // PublicKey：用户/付费者（指令中的 user）
-  gridId,                  // number
-  ttlSlots,                // 可选，默认 2000
-  feeCap,                  // 可选，默认 1_000_000（lamports，bigint 语义在编码时处理）
-  signTransaction,
-  signers,                 // SessionV1Signers
-  options?,
-);
-```
-
-**`SessionV1Signers`**：`{ feePayerSigner?: Keypair }`  
-未提供 `feePayerSigner` 时，fee payer 为 `user`。
-
-### `closeSession`
-
-关闭指定 `gridId` 的会话。
-
-```typescript
-await sdk.closeSession(
-  user,
-  gridId,
-  signTransaction,
-  signers,                 // SessionV1Signers
-  options?,
-);
-```
-
-若传入 `feePayerSigner`，其公钥必须与 fee payer 一致，否则抛错。
-
-### `depositFee`
-
-向某用户的会话存入 `lamports` 费用。
-
-```typescript
-await sdk.depositFee(
-  user,                    // 存款人（签名账户）
-  sessionOwner,            // 会话所有者 PublicKey
-  gridId,
-  lamports,                // number
-  signTransaction,
-  signers,                 // DepositFeeV1Signers
-  options?,
-);
-```
-
-**`DepositFeeV1Signers`**：`{ depositorSigner?: Keypair; feePayerSigner?: Keypair }`  
-省略时由 `user` 对应钱包完成签名；本地可先签 `depositorSigner` / `feePayerSigner` 再交给钱包。
-
-### `delegate`
-
-将 **已由 Portal 程序拥有的账户** 委托到指定 grid（指令数据含 `gridId`）。  
-参数 **`ownerProgramId`** 为 **undelegate 时账户应归还的 owner 程序**，同时也是 Portal 内部 buffer 账户的 owner（常见流程：先把账户 assign 给 Portal，再 delegate 并指定 `ownerProgramId`）。
-
-SDK 会自动生成一个 0 字节的 buffer Keypair 并预置 `system::createAccount`（owner=`ownerProgramId`），以满足合并后的 Portal::Delegate 强制要求 buffer 账户的约定（参见 northstar#59）。
-
-```typescript
-await sdk.delegate(
-  user,                    // PublicKey：支付/主签名人
-  gridId,
-  ownerProgramId,          // PublicKey
-  signTransaction,
-  signers,                 // DelegateV1Signers
-  options?,
-);
-```
-
-**`DelegateV1Signers`**：
-
-```typescript
-{
-  delegatedAccountSigner: Keypair;  // 被委托账户，需参与签名
-  feePayerSigner?: Keypair;
-}
-```
-
-### `undelegate`
-
-撤销委托并把账户归还给 `ownerProgramId`。
-
-```typescript
-await sdk.undelegate(
-  user,
-  ownerProgramId,          // 必须等于 delegate 时传入的同一个 owner 程序
-  signTransaction,
-  signers,                 // 同 DelegateV1Signers
-  options?,
-);
-```
-
-### `delegate_v1`
-
-与 `delegate` 相同，为向后兼容别名，**已弃用**。
-
----
-
-## 仅构造指令（不发送）
-
-用于自定义组合交易或在外部钱包中展示：
-
-| 方法 | 返回 |
-|------|------|
-| `buildOpenSession(signer, gridId, ttlSlots?, feeCap?)` | `{ instructions, feePayer, blockhash, lastValidBlockHeight }` |
-| `buildCloseSession(signer, gridId)` | 同上 |
-| `buildDepositFee(signer, sessionOwner, gridId, lamports)` | 同上 |
-| `buildDelegate(signer, delegatedAccount, gridId, ownerProgramId)` | 返回额外字段 `buffer: Keypair`；交易签名时必须把 `buffer` 与 `signer`、`delegatedAccount` 一并加入签名集。 |
-| `buildUndelegate(signer, delegatedAccount, ownerProgramId)` | 同上 |
-
-其中 `instructions` 为 `TransactionInstruction[]`，`feePayer` 为 `signer.publicKey`。
-
----
-
-## `PortalProgram`
-
-通过 `sdk.portal` 或 `new PortalProgram(programId)` 使用（SDK 内已绑定配置中的程序 ID）。
-
-### PDA 推导（静态/实例均可）
-
-| 方法 | Seeds（概念） |
-|------|----------------|
-| `deriveSessionPDA(owner, gridId)` | `session` + owner + `gridId` (u64 LE) |
-| `deriveFeeVaultPDA(owner)` | `fee_vault` + owner |
-| `deriveDelegationRecordPDA(delegatedAccount)` | `delegation` + delegatedAccount |
-| `deriveDepositReceiptPDA(session, recipient)` | `deposit_receipt` + session + recipient |
-
-### 指令编码（Borsh）
-
-| 方法 | 说明 |
-|------|------|
-| `encodeOpenSession({ gridId, ttlSlots, feeCap })` | variant 0 |
-| `encodeCloseSession({ gridId })` | variant 1 |
-| `encodeDepositFee({ lamports })` | variant 2 |
-| `encodeDelegate({ gridId })` | variant 3 |
-| `encodeUndelegate()` | variant 4 |
-
-### 账户数据解析
-
-在 `getAccountInfo` 取得 `data: Uint8Array` 后：
-
-| 方法 | 说明 |
-|------|------|
-| `parseSession(data)` | Session 状态 |
-| `parseFeeVault(data)` | FeeVault |
-| `parseDelegationRecord(data)` | DelegationRecord |
-| `parseDepositReceipt(data)` | DepositReceipt |
-
-可结合 `SESSION_DISCRIMINATOR` 等常量做类型判别。
-
----
-
-## 辅助函数
-
-### `encodeSystemProgramAssignData(newProgramOwner: PublicKey): Uint8Array`
-
-构造 **System Program** `Assign` 指令的 instruction data（用于将账户 owner 改为新程序）。  
-典型用法：配合 `TransactionInstruction`，`programId` 为 `SystemProgram.programId`，由账户自身签名。
-
----
-
-## 类型导出
-
-主入口从 `./types` 再导出，主要包括：
-
-- `NorthStarConfig`
-- `AccountInfo`
-- `ReadTransactionParams`
-- `EphemeralRollupAccountResponse`（Rollup RPC 响应形状）
-- `Address`（即 `PublicKey`）
-
-以及 `TransactionResult`、`TransactionOptions`、各类 `*V1Signers`、`WalletSignTransaction` 等（见 `src/index.ts`）。
-
----
-
-## 集成测试与环境变量
-
-仓库内 **`tests/real-integration.test.ts`** 为真实链上集成示例（需 Portal 与 RPC）。常用环境变量：
-
-| 变量 | 说明 |
-|------|------|
-| `PORTAL_PROGRAM_ID` | Portal 程序 ID（Base58） |
-| `TRANSFER_SOURCE_PRIVATE_KEY` | 资助用私钥 Base58（测试转账） |
-
-运行单元测试（不含集成）：
-
-```bash
-npm test
-```
-
-仅集成测试：
-
-```bash
-npm run test:integration
-```
-
----
-
-## 源码中的其它模块
-
-- **`src/config/networks.ts`**：示例性的 `NETWORKS` 常量（**未**从包主入口导出），可按需复制或自行维护 RPC 列表。
-- **`src/builders/TransactionBuilder.ts`**：另一种「结构化」交易拼装格式（`programPublicKey` / `role`），**当前未从 `src/index.ts` 导出**；若使用需自行从源码路径引用并注意与 `NorthStarSDK` 内置指令布局的一致性。
-
----
-
-## 许可证
+`er-confirmed` requires a successful ER receipt for the exact signature and a
+matching ER session. It is not a VRF result, callback receipt, or L1 settlement.
+The SDK checks immediately after submission, then polls within a default 2.8-second
+budget from the call, excluding wallet signing. `settlement-pending` reports an
+observed admission refusal with no later ambiguous send; `unconfirmed` does not
+mean the transaction failed. Reconcile the saved signature in the same session.
+Do not create a replacement request or show a VRF result based on either status.
+Settlement backpressure can still prevent an acknowledgement inside the budget.
+
+For checkpoint-gated VRF, use `calculateErVrfDeadlineSlots(budget, limits)` with the
+observed ER slot interval and Coordinator limits. Include checkpoint wait,
+challenge/finality, queue wait, delivery, and a safety margin in milliseconds.
+The validator's configured 10 ms sleep excludes bank-processing time and is not
+an observed slot interval. A 24,000-slot on-chain minimum is about 14.4 minutes
+at an observed 36 ms per slot; a 65,535-slot maximum is about 39.3 minutes.
+The helper rounds up, applies the on-chain minimum, and rejects an insufficient
+ceiling. It does not guarantee a wall-clock TTL or change on-chain configuration.
+Checkpoint-gated signing and settlement-pending write retries remain required.
+
+## Unavailable lifecycle operations
+
+Close-session, undelegation, undelegation-request and immediate token-payout APIs
+currently throw before signing. They are not implemented continuity lifecycle
+bindings. No legacy instruction is emitted as a substitute.
+
+## Funded live tests
+
+`npm run test:integration` exercises wallet delegation, explicit SOL credit, two
+payouts and a later top-up. `npm run test:spl-token-live` exercises token custody,
+owner-program delegation, ER transfer and deferred SPL payout. Both require a
+running matching native runtime; they do not start or restart a validator.
+
+Set `PORTAL_PROGRAM_ID`, `TOKEN_BRIDGE_PROGRAM_ID`, `VALIDATOR_IDENTITY`,
+`L1_GENESIS_HASH`, `CHECKPOINT_PROFILE` (64 hex digits), and
+`TRANSFER_SOURCE_PRIVATE_KEY` (base58). Set `VALIDATOR_RPC` and
+`EPHEMERAL_ROLLUP_RPC` for the actual endpoints; `NORTHSTAR_GRID_ID` defaults to 0.
+Existing sessions must match the expected authority, validator, grid and profile.
+They are never closed or reset automatically.
+
+Funded tests reject mainnet. Other than the exact devnet genesis, they permit only
+loopback L1 endpoints inside `NORTHSTAR_SANDBOX=1`. They use disposable development
+accounts and leave active delegated state; do not use production funding keys.
+A type-checked live test is not a successful live run or restart qualification.
+The [local RPC report](tests/evidence/continuity-local-rpc.json) records SPL custody,
+transfer and payout, retained balances after a same-ledger restart, and two SOL
+payouts after that restart. It does not qualify hosted deployment or proof acceptance.
+
+## Wire contract
+
+`PortalProgram` parses exact-length frames: Session 378 bytes, DepositReceipt 137
+bytes and SessionBridge 209 bytes. It rejects legacy frames and trailing bytes.
+The stable embedded structs are part of these frames, not an alternate API.
+
+Session commitments match native `SessionIdentityV2`: domain-separated Borsh,
+full little-endian `u128` nonce and SHA-256 with the protocol field mask. Tests
+include independently generated native vectors for low and high nonce bits.
+
+Context-derived PDA seeds use `session_bridge_v2`, `deposit_receipt_v2` and
+`ingress_v2`. The session context binds L1 genesis, Portal, session, nonce, grid,
+validator and checkpoint profile. Never reuse an old context after reopening a
+session.
+
+## License
 
 MIT

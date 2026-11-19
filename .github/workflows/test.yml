@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+      - release
 
 jobs:
   test:
@@ -27,6 +28,9 @@ jobs:
 
       - name: Build
         run: yarn build
+
+      - name: Type-check live integration bindings
+        run: yarn typecheck:live
 
       - name: Run tests
         run: yarn test
