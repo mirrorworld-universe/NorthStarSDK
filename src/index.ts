@@ -10,7 +10,7 @@ import { checkedHash, checkedInteger, Hash32 } from "./programs/continuity";
 import { PortalProgram, WITHDRAWAL_SINK } from "./programs/portal";
 import { TokenBridgeProgram } from "./programs/tokenBridge";
 import { sameBytes, SessionManager, SessionSnapshot } from "./session/SessionManager";
-import { ErTransactionOptions, submitErTransaction } from "./solana/erTransaction";
+import { acknowledgeErTransaction, ErAcknowledgementOptions, ErTransactionAcknowledgement, ErTransactionOptions, submitErTransaction } from "./solana/erTransaction";
 import {
   getVersionedTxSignatureBase58, sendRawVersionedTransaction,
   signVersionedTransaction, toPublicKey,
@@ -23,7 +23,7 @@ export type { Session, DepositReceipt, SessionBridge } from "./programs/portal";
 export { sessionCommitment } from "./programs/continuity";
 export { calculateErVrfDeadlineSlots } from "./solana/erVrfDeadline";
 export type { ErVrfDeadlineBudget, VrfDeadlineLimits } from "./solana/erVrfDeadline";
-export type { ErTransactionOptions } from "./solana/erTransaction";
+export type { ErAcknowledgementOptions, ErTransactionAcknowledgement, ErTransactionOptions } from "./solana/erTransaction";
 export type { Hash32, SessionIdentity } from "./programs/continuity";
 export type { SessionSnapshot } from "./session/SessionManager";
 export * from "./types";
@@ -113,9 +113,15 @@ export class NorthStarSDK {
     if (status.isSyncing || status.latestSyncedSlot < status.latestL1Slot || status.checkpointError != null) {
       throw new Error("ER runtime is syncing or has a checkpoint error");
     }
-    const address = await this.ephemeralRollupReader.getSessionPda();
+    await this.assertErSessionBinding(snapshot);
+  }
+
+  private async assertErSessionBinding(snapshot: SessionSnapshot): Promise<void> {
+    const [address, account] = await Promise.all([
+      this.ephemeralRollupReader.getSessionPda(),
+      this.ephemeral_rpc.getAccountInfo(snapshot.address, "confirmed"),
+    ]);
     if (!address?.equals(snapshot.address)) throw new Error("ER session differs from L1");
-    const account = await this.ephemeral_rpc.getAccountInfo(snapshot.address, "confirmed");
     if (!account || account.executable || !account.owner.equals(this.portalProgramId)) {
       throw new Error("ER session account is missing or has the wrong owner");
     }
@@ -461,6 +467,22 @@ export class NorthStarSDK {
         throw new Error("ER session changed while confirming the saved transaction");
       }
       expected = snapshot;
+    }, options);
+  }
+
+  async sendAndAcknowledgeErTransaction(
+    transaction: VersionedTransaction, options: ErAcknowledgementOptions = {},
+  ): Promise<ErTransactionAcknowledgement> {
+    let expected: SessionSnapshot | undefined;
+    return acknowledgeErTransaction(this.ephemeral_rpc, transaction, async () => {
+      const snapshot = await this.getExecutionSession();
+      if (expected && (!snapshot.address.equals(expected.address) || !sameBytes(snapshot.context, expected.context))) {
+        throw new Error("ER session changed while acknowledging the saved transaction");
+      }
+      expected = snapshot;
+    }, async () => {
+      if (!expected) throw new Error("Expected ER session is not bound");
+      await this.assertErSessionBinding(expected);
     }, options);
   }
 
