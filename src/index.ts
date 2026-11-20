@@ -108,27 +108,34 @@ export class NorthStarSDK {
     return snapshot;
   }
 
-  private async assertErSession(snapshot: SessionSnapshot): Promise<void> {
-    const status = await this.ephemeralRollupReader.getSyncStatus();
+  private async readErSessionContext(expectedAddress: PublicKey): Promise<Hash32> {
+    const [status, address, account] = await Promise.all([
+      this.ephemeralRollupReader.getSyncStatus(),
+      this.ephemeralRollupReader.getSessionPda(),
+      this.ephemeral_rpc.getAccountInfo(expectedAddress, "confirmed"),
+    ]);
     if (status.isSyncing || status.latestSyncedSlot < status.latestL1Slot || status.checkpointError != null) {
       throw new Error("ER runtime is syncing or has a checkpoint error");
     }
-    await this.assertErSessionBinding(snapshot);
-  }
-
-  private async assertErSessionBinding(snapshot: SessionSnapshot): Promise<void> {
-    const [address, account] = await Promise.all([
-      this.ephemeralRollupReader.getSessionPda(),
-      this.ephemeral_rpc.getAccountInfo(snapshot.address, "confirmed"),
-    ]);
-    if (!address?.equals(snapshot.address)) throw new Error("ER session differs from L1");
+    if (!address?.equals(expectedAddress)) throw new Error("ER session differs from L1");
     if (!account || account.executable || !account.owner.equals(this.portalProgramId)) {
       throw new Error("ER session account is missing or has the wrong owner");
     }
-    const state = this.portal.parseSession(account.data);
-    if (!sameBytes(this.portal.sessionContext(snapshot.address, state), snapshot.context)) {
+    return this.portal.sessionContext(expectedAddress, this.portal.parseSession(account.data));
+  }
+
+  private async assertErSession(snapshot: SessionSnapshot): Promise<void> {
+    const context = await this.readErSessionContext(snapshot.address);
+    if (!sameBytes(context, snapshot.context)) throw new Error("ER session incarnation differs from L1");
+  }
+
+  private async getAcknowledgementSession(): Promise<SessionSnapshot> {
+    const address = await this.portal.deriveSessionPDA();
+    const [snapshot, context] = await Promise.all([this.getSessionSnapshot(), this.readErSessionContext(address)]);
+    if (!snapshot.address.equals(address) || !sameBytes(context, snapshot.context)) {
       throw new Error("ER session incarnation differs from L1");
     }
+    return snapshot;
   }
 
   async generateKeyPair(): Promise<Keypair> { return Keypair.generate(); }
@@ -475,14 +482,14 @@ export class NorthStarSDK {
   ): Promise<ErTransactionAcknowledgement> {
     let expected: SessionSnapshot | undefined;
     return acknowledgeErTransaction(this.ephemeral_rpc, transaction, async () => {
-      const snapshot = await this.getExecutionSession();
+      const snapshot = await this.getAcknowledgementSession();
       if (expected && (!snapshot.address.equals(expected.address) || !sameBytes(snapshot.context, expected.context))) {
         throw new Error("ER session changed while acknowledging the saved transaction");
       }
       expected = snapshot;
     }, async () => {
       if (!expected) throw new Error("Expected ER session is not bound");
-      await this.assertErSessionBinding(expected);
+      await this.assertErSession(expected);
     }, options);
   }
 

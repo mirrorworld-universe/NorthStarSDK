@@ -200,6 +200,8 @@ switch (receipt.status) {
 
 `er-confirmed` requires a successful ER receipt for the exact signature and a
 matching ER session. It is not a VRF result, callback receipt, or L1 settlement.
+The SDK runs the L1 and ER admission reads in parallel without caching the session.
+It checks the ER session and sync status again before returning a receipt.
 The SDK checks immediately after submission, then polls within a default 2.8-second
 budget from the call, excluding wallet signing. `settlement-pending` reports an
 observed admission refusal with no later ambiguous send; `unconfirmed` does not
