@@ -36,9 +36,11 @@ export class SessionManager {
   }
 
   async getSession(): Promise<SessionSnapshot> {
-    await this.verifyNetwork();
     const address = await this.portal.deriveSessionPDA();
-    const response = await this.rpc.getAccountInfoAndContext(address, "confirmed");
+    const [, response] = await Promise.all([
+      this.verifyNetwork(),
+      this.rpc.getAccountInfoAndContext(address, "confirmed"),
+    ]);
     const slot = checkedInteger(response.context.slot, 64, "L1 context slot");
     const account = response.value;
     if (!account || account.executable || !account.owner.equals(this.portal.getProgramId())) {
