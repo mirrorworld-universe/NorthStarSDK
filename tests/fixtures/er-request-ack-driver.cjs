@@ -1,10 +1,38 @@
 // Disposable Northstar fixture driver. Never run it against a live endpoint.
 const assert = require("node:assert/strict");
 const { readFileSync, writeFileSync } = require("node:fs");
+const { createServer, request } = require("node:http");
 const { networkInterfaces } = require("node:os");
 const { dirname, join } = require("node:path");
 const { Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } = require("@solana/web3.js");
 const { NorthStarSDK, getVersionedTxSignatureBase58 } = require("../../dist");
+
+const proxies = [];
+
+async function delayedRpc(endpoint, ms) {
+  if (!ms) return endpoint;
+  const proxy = createServer((input, output) => {
+    const upstream = request(endpoint, { method: input.method, headers: input.headers }, response => {
+      const timer = setTimeout(() => {
+        output.writeHead(response.statusCode, response.headers);
+        response.pipe(output);
+      }, ms);
+      output.once("close", () => { clearTimeout(timer); response.destroy(); });
+      response.on("error", () => output.destroy());
+    });
+    upstream.setTimeout(6000, () => upstream.destroy());
+    upstream.on("error", () => {
+      if (output.destroyed) return;
+      if (output.headersSent) output.destroy();
+      else output.writeHead(502).end();
+    });
+    output.once("close", () => upstream.destroy());
+    input.pipe(upstream);
+  });
+  await new Promise((resolve, reject) => proxy.once("error", reject).listen(0, "127.0.0.1", resolve));
+  proxies.push(proxy);
+  return `http://127.0.0.1:${proxy.address().port}`;
+}
 
 async function main() {
   assert.deepEqual(Object.keys(networkInterfaces()), ["lo"]);
@@ -15,10 +43,13 @@ async function main() {
   assert.notEqual(spec.l1, spec.er);
   assert.ok(Array.isArray(spec.requests) && spec.requests.length > 0 && spec.requests.length <= 24);
   assert.ok(!["EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG", "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"].includes(spec.l1Genesis));
+  const delay = Number(process.env.NORTHSTAR_TEST_ACK_RPC_DELAY_MS ?? "0");
+  assert.ok(Number.isInteger(delay) && delay >= 0 && delay <= 400);
+  const [solana, ephemeralRollup] = await Promise.all([delayedRpc(spec.l1, delay), delayedRpc(spec.er, delay)]);
   const sdk = new NorthStarSDK({
     portalProgramId: new PublicKey(spec.portal), tokenBridgeProgramId: new PublicKey(spec.bridge),
     l1GenesisHash: spec.l1Genesis, checkpointProfile: Buffer.from(spec.profile, "hex"),
-    customEndpoints: { solana: spec.l1, ephemeralRollup: spec.er },
+    customEndpoints: { solana, ephemeralRollup },
   });
   const rpc = sdk.getEphemeralRpc();
   const expectedSession = new PublicKey(spec.session);
@@ -79,7 +110,9 @@ async function main() {
     }
     results.push(result);
   }
-  console.log(JSON.stringify({ results }));
+  console.log(JSON.stringify({ results, added_rpc_delay_ms: delay }));
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+main().catch(error => { console.error(error); process.exitCode = 1; }).finally(() => {
+  for (const proxy of proxies) { proxy.close(); proxy.closeAllConnections(); }
+});
