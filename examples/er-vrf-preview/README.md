@@ -1,6 +1,29 @@
 # ER VRF integration preview (devnet)
 
-Use the **live receipt** to show that the ER received a request. Use the **offline recording** to test your callback handler without waiting for a draw. The tools have separate entry points. Neither requires a wallet or sends a transaction.
+Use the **demo adapter** for a new test value per round, the **live receipt** to show that ER received a transaction, or the **offline recording** to inspect a historical callback. They are separate, explicit entry points. None requires a wallet or sends a transaction.
+
+### Fresh devnet app callback (stub)
+
+On the app server, use [demo-randomness.cjs](./demo-randomness.cjs) with Node 20+ on Linux. Initialize a new directory **once** under an app-owned private parent with `await initDemoStore(directory)`. Keep it across restarts; do not put it inside the validator, signer or relay state directories. Opening a missing store fails instead of silently changing round results.
+
+```js
+const { openDevnetDemoRandomness } = require('./examples/er-vrf-preview/demo-randomness.cjs');
+const provider = await openDevnetDemoRandomness({
+  network: 'devnet', directory,
+  onDemoRandomness(roundId, bytes, metadata) {
+    // Upsert the test view by roundId: redelivery is possible.
+    showDemoDraw(roundId, Buffer.from(bytes).toString('hex'), metadata.source);
+  },
+});
+const request = provider.requestRandomness('bilal:round-42'); // returns before the handler runs
+await request.delivered; // rejects if the handler failed; retry the same roundId
+```
+
+The interface models acceptance followed by asynchronous delivery of 64 bytes. New round IDs get distinct pseudorandom test values derived from the instance entropy. A retry or reopen of the same instance reproduces the same bytes. Concurrent duplicate requests on one provider share a delivery; later retries can call the handler again. There is no durable delivery queue: after restarting, resubmit outstanding IDs. Each app/test deployment needs its own instance directory.
+
+This is an **app callback**, not an ER instruction, VRF proof, quorum certificate, or L1 settlement. Metadata always includes `verified: false`, `erCertified: false` and `l1Settled: false`. Keep the adapter behind an explicit demo setting. Never select it on failure of the real provider or use its output for prizes. A future certified provider can feed the same UI handler; only that provider may report verified evidence.
+
+For a dependency-free E2E through the app callback, run `node examples/er-vrf-preview/demo-smoke.cjs`. It measures request to handler invocation, checks retry/reopen and a second fresh round, and removes its temporary demo store. It does not measure chain latency.
 
 ### 1. Test the callback handler now
 
