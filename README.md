@@ -179,6 +179,8 @@ not generating another request. Existing L1 submission methods are unchanged.
 
 ### Show VRF request receipt before settlement
 
+The [devnet VRF integration preview](examples/er-vrf-preview/) includes a read-only receipt lookup and a separate offline callback recording for handler tests. Neither sends a transaction.
+
 Use the fast acknowledgement instead of the long send/confirm call when the app
 needs an early status. Save the signed transaction and its request identity before
 submitting it.
